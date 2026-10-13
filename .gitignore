@@ -1,0 +1,33 @@
+# Build output
+/ymlib
+/bin/
+/dist/
+spikes/imgspike/imgspike
+spikes/tagspike/tagspike
+
+# Go tooling
+*.test
+*.out
+*.prof
+coverage.*
+go.work
+go.work.sum
+
+# Generated audio (spike samples are regenerated with ffmpeg; tests generate their own)
+spikes/tagspike/*.flac
+spikes/tagspike/*.mp3
+
+# Local data: SQLite index/cache and secrets
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+.env
+.env.*
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
