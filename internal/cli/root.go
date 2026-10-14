@@ -13,14 +13,23 @@ type app struct {
 	configPath string
 	dirs       platform.Dirs
 	cfg        config.Config
+	endpoints  endpoints
 }
+
+// version is reported by --version and sent in the User-Agent.
+const version = "0.1.0-dev"
 
 // NewRootCommand builds the command tree. dirs is injected so tests can use
 // temporary directories.
 func NewRootCommand(dirs platform.Dirs) *cobra.Command {
-	a := &app{dirs: dirs}
+	return newRoot(&app{dirs: dirs})
+}
+
+func newRoot(a *app) *cobra.Command {
+	dirs := a.dirs
 	root := &cobra.Command{
 		Use:           "ymlib",
+		Version:       version,
 		Short:         "Your music library: download, tag, organize and sync music",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -40,5 +49,6 @@ func NewRootCommand(dirs platform.Dirs) *cobra.Command {
 
 	root.AddCommand(newConfigCommand(a, loadConfig), newPresetCommand(a, loadConfig))
 	root.AddCommand(newLibraryCommands(a, loadConfig)...)
+	root.AddCommand(newMetadataCommands(a, loadConfig)...)
 	return root
 }

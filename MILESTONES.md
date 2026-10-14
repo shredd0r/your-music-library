@@ -12,8 +12,8 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | M0 | Library spikes: tags + terminal covers | ✅ 2026-10-13 |
 | M1 | Platform dirs, config + presets, SQLite store, `config`/`preset` commands | ✅ 2026-10-13 |
 | M2 | Tags read/write, path template, `scan` / `organize` / `retag`, singles modes | ✅ 2026-10-14 |
-| M3 | Metadata providers (Discogs → MusicBrainz), cache, Needs Review | ⏳ next |
-| M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ⏳ |
+| M3 | Metadata providers (Discogs → MusicBrainz), cache, Needs Review | ✅ 2026-10-14 |
+| M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ⏳ next |
 | M5 | TUI v1 | ⏳ |
 | **Later stages** | | |
 | S2 | Duplicate detection polished across sources | ⏳ |
@@ -66,13 +66,23 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 - Commands: `ymlib scan`, `ymlib organize [--apply]`, `ymlib retag [--preset X] [--apply]`, `ymlib singles [as-album|grouped] [--apply]`. **Preview is the default; `--apply` executes.** organize/retag/singles scan first.
 - Tests: fixtures `internal/testutil/testdata/tiny.{flac,mp3}` (0.1 s, untagged) and the `testutil.CopyAudio`/`testutil.JPEG` helpers. A manual end-to-end run on ffmpeg-tagged files found and fixed two bugs: "Other" cover type, and merged-folder image conflicts.
 
-## M3 — Metadata ⏳
-- `internal/metadata`: `Provider` interface. Discogs client (personal token, 60 req/min) and MusicBrainz client (1 req/s, required User-Agent), plus Cover Art Archive.
-- Chain, whole-record: Discogs is primary, MusicBrainz is used when Discogs finds nothing or errors. Exception still to confirm (Q20): Genre and covers only, from the next provider, if the same release matches by barcode or catalog number.
-- Confidence scoring: auto-apply above a threshold, otherwise create a `review_items` row with candidates. Command: `ymlib review` (CLI list/resolve; TUI screen in M5).
-- `internal/cache`: in-memory map during a run, flushed to `cache_entries` on exit and periodically (crash safety), loaded on start, purge entries older than `cache.max_age_days` on startup. Cover images cached as files in `Dirs.Cache`.
-- Credentials: OS keychain (`zalando/go-keyring`), env var alternative (e.g. `YMLIB_DISCOGS_TOKEN`).
-- Tests: recorded HTTP fixtures (`httptest`), no network.
+## M3 — Metadata ✅
+- `internal/cache`: `Store` is the two-level cache: an in-memory map while the app runs, read-through to SQLite on a miss, written back by `Flush` (every minute via `Run`, and on exit). On startup, rows older than `cache.max_age_days` are deleted. `Files` keeps cover images as files in `~/.cache/ymlib/covers` with the same age limit. Cache keys are request URLs (tokens live in headers, never in keys).
+- `internal/metadata`:
+  - `Provider` interface (`Search` → `Candidate`s, `Release` → full `Release`). Shared HTTP client with a per-provider rate limit, retries on 429/5xx (`Retry-After`), `ErrNotFound`, and caching.
+  - `Discogs`: token in the `Authorization` header, 1 request/s. Artist names lose Discogs' "(2)" suffixes; credits are joined as printed. Dates like `1987-07-00` become `1987-07`; for the chosen release, `RefineDate` checks the master's main edition for a full date (up to 2 extra requests, cached). Track positions `2-03`/`CD1-7` mean disc 2 track 3 / disc 1 track 7; vinyl `A1…B6` is numbered in order. Release type comes from the format descriptions (Single/EP/Compilation). Genre is `genres[0]` (broad, e.g. "Funk / Soul"). Front cover is the primary image. No back cover, because Discogs doesn't label it.
+  - `MusicBrainz`: 1 request/s, User-Agent `ymlib/<version> ( metadata.contact )`. Date is the release group's **original** release date; if that is only `yyyy` or `yyyy-mm`, this edition's date fills it in when it's from the same period (`pickMBDate`). Genre is the most-voted one, formatted ("Contemporary R&B"). Release type comes from the release group (a Compilation secondary type wins). Covers come from the Cover Art Archive (`/front`, `/back`). For a track with no album, it searches releases named like the track (its single) first, then the recording's releases.
+  - Matching: `similarity` folds case, accents, typographic quotes, `&`→and and punctuation, and ignores edition noise like "(Remastered 2009)" or "[Deluxe Edition]". `Score` = 0.25 artist + 0.25 album + 0.5 tracks (title, or an ISRC equal = 1). Compilations get ×0.7 unless the album name matches. Durations off by more than 15 s on most tracks give ×0.85. Ties go to the closer track count (standard over deluxe), then the earlier date.
+  - **Dates are `yyyy-mm-dd`** (ISO, what ID3v2.4/Vorbis expect). If no source has the full date, the known part (`yyyy` or `yyyy-mm`) is written; a day is never invented. `Identifier.Refine` (the `DateRefiner` interface) runs only for the chosen release: the best match in `identify`, the picked candidate in `review apply`.
+  - `Identifier`: providers in config order. Details are fetched for the top 3 hits per provider. **The next provider is tried when the previous one errors, finds nothing, or has no match ≥ `metadata.min_score`** (default 0.85). The result always comes from one release (whole record).
+- `internal/secrets`: Discogs token in the OS keychain (`zalando/go-keyring`), `YMLIB_DISCOGS_TOKEN` overrides it. Tests use the mock keychain.
+- `internal/library`:
+  - `PlanIdentify`/`ApplyIdentify` group files by album (grouped singles by their original album; tracks without an album are looked up alone). Files with a release ID are skipped unless `Force`. `ApplyRelease` replaces all release fields and IDs (clearing the other provider's IDs) and keeps source IDs; for a grouped single it keeps the group's album and numbering and fills OriginalAlbum/OriginalTrack.
+  - On apply, covers are downloaded once per album. The full size is saved to `cover.jpg`/`back.jpg` if missing, then the active preset is applied. A failed cover download is a warning; tags are still written.
+  - Weak matches become `review_items` (migration `0003_review_groups.sql` adds a `paths` JSON column), storing the full candidates so resolving needs no new lookup. Identifying the same files again replaces the open review. `organize` updates review paths, and a successful identify closes reviews of the files it tagged.
+- Config: `metadata.min_score` (0.85) and `metadata.contact` (optional; only sent if you set it).
+- Commands: `ymlib identify [folder...] [--force] [--apply]`, `ymlib review`, `ymlib review apply <id> <n> [--apply]`, `ymlib review skip <id>`, `ymlib auth discogs [--remove]`, `ymlib auth status`, `ymlib --version`.
+- Tests: recorded real responses in `internal/metadata/testdata` (Discogs releases 120096 and 249504; MusicBrainz searches and the "Off the Wall" release). **The Discogs search fixture is handwritten** (search needs a token), so verify it against the real API once a token is set. A live run against MusicBrainz tagged an album and a lone single correctly; it found and fixed the single-search and review-sync bugs.
 
 ## M4 — Sources and queue ⏳
 - `internal/source`: plugin protocol, JSON over stdin/stdout, with operations `search` (results: title, artist, album, length, quality, explicit, cover URL, source ID), `resolve`, and `download` (into a given temp folder). Plugins are found in a configured folder. Fake plugin binary built in tests.
@@ -121,8 +131,10 @@ artists:
 - Windows support via `internal/platform`.
 
 ## Open questions
+- M3: MusicBrainz uses typographic apostrophes (`Don’t Stop ’til`), and they are written as-is. Should titles be normalized to ASCII `'` (a config option)?
+- M3: Discogs has never been run with a real token; check search results and rate-limit headers.
 - Grouped singles: the plan said "album date = earliest single", but a file has only one Date tag and each single keeps its own. Not implemented. Decide whether it's needed (e.g. an ORIGINALDATE-style tag) or drop it.
 - Grouped singles: when single folders merge, only the first `cover.jpg` moves and the others stay in their old folders (reported as conflicts). Decide whether to keep, delete or rename them (e.g. `cover-<title>.jpg`).
-- M3: confirm the Genre/cover exception to whole-record matching (Q20 was answered by moving Discogs to primary; the exception itself is unconfirmed).
+- Genre/cover exception to whole-record matching (Q20) is still not implemented: with Discogs primary, genre is almost always present; covers are missing only when a provider has none. Decide whether it's still wanted.
 - S3: standard vs. deluxe default (Q22) and "playlists only for chosen artists" (Q24) were taken as the recommended defaults because the answers repeated the questions. Confirm both.
 - M4A tag writing was postponed in M2: an ffmpeg-based writer later, or a pure-Go library if one matures.

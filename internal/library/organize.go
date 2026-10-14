@@ -164,6 +164,7 @@ func (l *Library) ApplyOrganize(ctx context.Context, plan OrganizePlan) (ApplyRe
 	// Audio moves come first; only they have index rows.
 	moves := append(append([]Move{}, plan.Moves...), plan.Images...)
 	sourceDirs := map[string]bool{}
+	moved := map[string]string{} // original audio path -> new path
 
 	for i := range moves {
 		if err := ctx.Err(); err != nil {
@@ -186,6 +187,7 @@ func (l *Library) ApplyOrganize(ctx context.Context, plan OrganizePlan) (ApplyRe
 			if _, err := l.db.ExecContext(ctx, "UPDATE tracks SET path = ? WHERE path = ?", m.To, m.From); err != nil {
 				return r, err
 			}
+			moved[plan.Moves[i].From] = m.To
 		}
 		sourceDirs[path.Dir(m.From)] = true
 		r.Changed++
@@ -193,7 +195,7 @@ func (l *Library) ApplyOrganize(ctx context.Context, plan OrganizePlan) (ApplyRe
 	for dir := range sourceDirs {
 		l.removeEmptyDirs(dir)
 	}
-	return r, nil
+	return r, l.followMoves(ctx, moved)
 }
 
 func (l *Library) rename(from, to string) error {

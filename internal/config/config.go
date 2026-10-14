@@ -38,6 +38,16 @@ type QueueConfig struct {
 	Parallel int `yaml:"parallel"`
 }
 
+// MetadataConfig controls metadata lookups (Discogs, MusicBrainz).
+type MetadataConfig struct {
+	// MinScore (0..1): matches scoring at least this are applied
+	// automatically; weaker ones go to the Needs Review list.
+	MinScore float64 `yaml:"min_score"`
+	// Contact (URL or email) is added to the User-Agent that MusicBrainz
+	// requires. Optional; nothing personal is sent unless set here.
+	Contact string `yaml:"contact,omitempty"`
+}
+
 type CacheConfig struct {
 	// MaxAgeDays: cache entries older than this are purged on startup.
 	MaxAgeDays int `yaml:"max_age_days"`
@@ -52,6 +62,7 @@ type Config struct {
 	Providers    []string
 	Queue        QueueConfig
 	Cache        CacheConfig
+	Metadata     MetadataConfig
 	// Presets holds built-in and user presets; user presets with the same
 	// name replace built-ins.
 	Presets map[string]Preset
@@ -67,6 +78,7 @@ func Default() Config {
 		Providers:    slices.Clone(KnownProviders),
 		Queue:        QueueConfig{Parallel: 2},
 		Cache:        CacheConfig{MaxAgeDays: 180},
+		Metadata:     MetadataConfig{MinScore: 0.85},
 		Presets:      builtinPresets(),
 	}
 }
@@ -96,6 +108,7 @@ type fileConfig struct {
 	Providers    *[]string             `yaml:"providers,omitempty"`
 	Queue        *QueueConfig          `yaml:"queue,omitempty"`
 	Cache        *CacheConfig          `yaml:"cache,omitempty"`
+	Metadata     *MetadataConfig       `yaml:"metadata,omitempty"`
 	Presets      map[string]filePreset `yaml:"presets,omitempty"`
 }
 
@@ -151,6 +164,9 @@ func Parse(data []byte) (Config, error) {
 	}
 	if fc.Cache != nil {
 		c.Cache = *fc.Cache
+	}
+	if fc.Metadata != nil {
+		c.Metadata = *fc.Metadata
 	}
 	for name, fp := range fc.Presets {
 		p, err := fp.toPreset(name)
@@ -209,6 +225,9 @@ func (c Config) Validate() error {
 	if c.Queue.Parallel < 1 {
 		errs = append(errs, errors.New("queue.parallel must be >= 1"))
 	}
+	if c.Metadata.MinScore <= 0 || c.Metadata.MinScore > 1 {
+		errs = append(errs, errors.New("metadata.min_score must be in (0, 1]"))
+	}
 	if c.Cache.MaxAgeDays < 1 {
 		errs = append(errs, errors.New("cache.max_age_days must be >= 1"))
 	}
@@ -227,6 +246,7 @@ func (c Config) Marshal() ([]byte, error) {
 		Providers:    &c.Providers,
 		Queue:        &c.Queue,
 		Cache:        &c.Cache,
+		Metadata:     &c.Metadata,
 	}
 	for name, p := range c.Presets {
 		if p.Builtin {

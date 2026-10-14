@@ -39,6 +39,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if c.PathTemplate != DefaultPathTemplate {
 		t.Errorf("PathTemplate = %q", c.PathTemplate)
 	}
+	if c.Metadata.MinScore != 0.85 || c.Metadata.Contact != "" {
+		t.Errorf("Metadata = %+v", c.Metadata)
+	}
 }
 
 func TestBuiltinPresets(t *testing.T) {
@@ -122,6 +125,8 @@ func TestValidationErrors(t *testing.T) {
 		"bad singles":     "singles: sometimes\n",
 		"bad parallel":    "queue:\n  parallel: 0\n",
 		"bad cache age":   "cache:\n  max_age_days: -1\n",
+		"bad min score":   "metadata:\n  min_score: 1.5\n",
+		"zero min score":  "metadata:\n  min_score: 0\n",
 		"bad provider":    "providers: [discogs, napster]\n",
 		"no providers":    "providers: []\n",
 		"negative cover":  "presets:\n  x:\n    fields: [Title]\n    cover_max_px: -5\n",
