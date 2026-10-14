@@ -1,0 +1,9 @@
+{
+  "pagination": {"page": 1, "pages": 1, "per_page": 10, "items": 2},
+  "results": [
+    {"id": 120096, "type": "release", "title": "Michael Jackson - Off The Wall", "year": "1979", "country": "US",
+     "format": ["Vinyl", "LP", "Album", "Stereo"], "genre": ["Funk / Soul", "Pop"], "catno": "FE 35745", "master_id": 15001},
+    {"id": 1234567, "type": "release", "title": "Various - Disco Hits Of 1979", "year": "1980", "country": "UK",
+     "format": ["Vinyl", "LP", "Compilation"], "genre": ["Funk / Soul"], "catno": "X 1", "master_id": 0}
+  ]
+}
