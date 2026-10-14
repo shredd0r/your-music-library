@@ -6,8 +6,8 @@ import "slices"
 type Preset struct {
 	Name   string
 	Fields []Field
-	// CoverMaxPx is the longest side of the embedded cover; 0 keeps the
-	// original size. The cover.jpg in the album folder is always full size.
+	// CoverMaxPx is the longest side of embedded front and back covers;
+	// 0 keeps the original size. The cover.jpg in the album folder is always full size.
 	CoverMaxPx int
 	Builtin    bool
 }
@@ -18,9 +18,12 @@ func (p Preset) Has(f Field) bool { return slices.Contains(p.Fields, f) }
 func builtinPresets() map[string]Preset {
 	return map[string]Preset{
 		"full": {
-			Name:    "full",
-			Fields:  slices.Clone(AllFields),
-			Builtin: true,
+			Name:   "full",
+			Fields: slices.Clone(AllFields),
+			// Embedded covers stay small; the full-size image is kept as
+			// cover.jpg in the album folder.
+			CoverMaxPx: 600,
+			Builtin:    true,
 		},
 		"mp3-player": {
 			Name: "mp3-player",

@@ -384,3 +384,20 @@ func TestTrackNumberIsZeroPadded(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyPresetShrinksBackCoverToo(t *testing.T) {
+	tr := Track{
+		Cover: &Picture{MIME: "image/jpeg", Data: testutil.JPEG(t, 1500, 1500, color.White)},
+		Back:  &Picture{MIME: "image/jpeg", Data: testutil.JPEG(t, 1200, 900, color.Black)},
+	}
+	got, err := ApplyPreset(tr, config.Default().Presets["full"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, p := range map[string]*Picture{"front": got.Cover, "back": got.Back} {
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(p.Data))
+		if err != nil || max(cfg.Width, cfg.Height) != 600 {
+			t.Errorf("%s cover %dx%d, want longest side 600", name, cfg.Width, cfg.Height)
+		}
+	}
+}

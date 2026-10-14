@@ -16,7 +16,7 @@ import (
 )
 
 // ApplyPreset returns a copy of t keeping only the preset's fields and with
-// the cover shrunk to the preset's CoverMaxPx. Identity and internal fields
+// front and back covers shrunk to the preset's CoverMaxPx. Identity and internal fields
 // are always kept. t is not modified.
 func ApplyPreset(t Track, p config.Preset) (Track, error) {
 	out := t
@@ -39,12 +39,17 @@ func ApplyPreset(t Track, p config.Preset) (Track, error) {
 			clear[f]()
 		}
 	}
-	if out.Cover != nil && p.CoverMaxPx > 0 {
-		c, err := ShrinkPicture(*out.Cover, p.CoverMaxPx)
-		if err != nil {
-			return Track{}, fmt.Errorf("resizing cover: %w", err)
+	if p.CoverMaxPx > 0 {
+		for _, pic := range []**Picture{&out.Cover, &out.Back} {
+			if *pic == nil {
+				continue
+			}
+			c, err := ShrinkPicture(**pic, p.CoverMaxPx)
+			if err != nil {
+				return Track{}, fmt.Errorf("resizing cover: %w", err)
+			}
+			*pic = &c
 		}
-		out.Cover = &c
 	}
 	return out, nil
 }

@@ -47,7 +47,7 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 func TestBuiltinPresets(t *testing.T) {
 	c := Default()
 	full, ok := c.Preset("full")
-	if !ok || len(full.Fields) != len(AllFields) || full.CoverMaxPx != 0 {
+	if !ok || len(full.Fields) != len(AllFields) || full.CoverMaxPx != 600 {
 		t.Fatalf("full preset wrong: %+v", full)
 	}
 	mp3, ok := c.Preset("mp3-player")
