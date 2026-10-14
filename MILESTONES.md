@@ -11,8 +11,8 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | **Stage 1 (MVP: feature 1)** | | |
 | M0 | Library spikes: tags + terminal covers | ✅ 2026-10-13 |
 | M1 | Platform dirs, config + presets, SQLite store, `config`/`preset` commands | ✅ 2026-10-13 |
-| M2 | Tags read/write, path template, `scan` / `organize` / `retag`, singles modes | ⏳ next |
-| M3 | Metadata providers (Discogs → MusicBrainz), cache, Needs Review | ⏳ |
+| M2 | Tags read/write, path template, `scan` / `organize` / `retag`, singles modes | ✅ 2026-10-14 |
+| M3 | Metadata providers (Discogs → MusicBrainz), cache, Needs Review | ⏳ next |
 | M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ⏳ |
 | M5 | TUI v1 | ⏳ |
 | **Later stages** | | |
@@ -26,7 +26,7 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 
 ## Conventions (apply to every milestone)
 - Go only, module `your-music-library`, binary `ymlib` (`cmd/ymlib`). Commands are defined in `internal/cli` and get injected `platform.Dirs` so tests use temporary directories.
-- Test-first. `go vet ./... && go test ./...` must pass before a milestone counts as done. Tests never touch the network or the real home directory.
+- Test-first. `make check` (gofmt, go vet, staticcheck, tests) must pass before a milestone counts as done. Tests never touch the network or the real home directory.
 - File tags are the source of truth. SQLite is only an index, rebuildable with `scan`.
 - Nothing moves or gets re-tagged without a preview (`--dry-run` shows the plan, applying is explicit).
 - No browser in core. No integration with unlicensed sources (lucida.to, monochrome.st and similar). Sources are external plugins.
@@ -39,7 +39,7 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 Goal: choose libraries before building on them. Code lives in `spikes/tagspike`, `spikes/imgspike`.
 - **Tags:** `go-flac/go-flac/v2` + `flacvorbis/v2` + `flacpicture/v2` for FLAC; `bogem/id3v2/v2` (v2.4, UTF-8) for MP3; `dhowden/tag` for reading. All fields, front/back pictures (types 3/4), and multi-value Artists work.
   - Artists: FLAC uses repeated `ARTISTS` comments. MP3 uses `TXXX:ARTISTS` with null-separated values (Picard convention); ffprobe shows only the first value, but nothing is lost.
-  - M4A: no reliable pure-Go writer. Decide in M2: an ffmpeg-based writer behind `TagWriter`, or postpone.
+  - M4A: no reliable pure-Go writer. Decided in M2: postponed.
 - **Covers in the terminal:** Kitty graphics protocol (Ghostty/Kitty/WezTerm), iTerm2 inline images, truecolor half-block fallback (Apple Terminal). Detected from `TERM_PROGRAM`/`TERM`/`KITTY_WINDOW_ID`, with a `YMLIB_IMG` override. Uses `golang.org/x/image/draw`.
 
 ## M1 — Foundations ✅
@@ -47,18 +47,24 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 - `internal/config`: fields (Title, Album, Artist, Artists, Album Artist, Date, Track Number, Disc Number, Genre, Picture Cover, Picture Back). `ParseField` ignores case, spaces, `_` and `-`. Built-in presets `full` (all fields, original cover) and `mp3-player` (no Artists or Picture Back, cover ≤600px). User presets in YAML; a user preset with a built-in's name replaces it. Validation rejects unknown keys and fields, duplicate fields, a bad singles mode, unknown providers, `parallel < 1`, and `max_age_days < 1`. Defaults: `library_path: ~/Music/ymlib`, `active_preset: full`, `singles: as-album`, `providers: [discogs, musicbrainz]`, `queue.parallel: 2`, `cache.max_age_days: 180`.
 - `internal/store`: SQLite (`modernc.org/sqlite`, WAL, foreign keys), embedded migrations tracked in `PRAGMA user_version`; refuses a database whose schema is newer than the binary. Migration 0001 creates tables `tracks`, `queue_jobs`, `review_items`, `cache_entries`.
 - Commands: `ymlib config path|show|init [--force]`, `ymlib preset list`, global flag `--config`.
-- Not yet: no command opens the database (first user: `scan` in M2).
+- The database is first used by `scan` (M2).
 
-## M2 — Tags, paths, library operations ⏳ (next)
-- `internal/tags`: `Track` model (all fields plus identity: source, source_track_id, ISRC, MB recording/release IDs, Discogs release ID, stored in custom tags). `TagReader` / `TagWriter` interfaces; FLAC + MP3 implementations. A writer writes **only the preset's fields** and removes the ones the preset excludes. Embedded cover resized to `CoverMaxPx` (JPEG). Decide on M4A.
-- `internal/pathtmpl`: render the template `{albumartist}/{album}/{disc?}{track:02} - {title}.{ext}`. `{disc?}` gives `D-` only on multi-disc albums. FAT32-safe name cleaning (`/ \ : * ? " < > |`, control characters, trailing dots and spaces, reserved names, length limit). Validate the template when loading the config. Collisions get a suffix or an error, never an overwrite.
-- `internal/library`:
-  - `scan`: walk `library_path`, read tags, upsert into `tracks` (skip files whose size and mtime haven't changed), remove rows for deleted files. Never modifies files.
-  - `organize --dry-run | --apply`: compute target paths from tags plus the template; move files, `cover.jpg` and `back.jpg`; clean up empty folders.
-  - `retag --preset X --dry-run | --apply`: show per-file field changes, then write.
-  - Singles: `as-album` vs. `grouped` ("`<Artist>` Singles", numbered by date, each file keeps its own Date, album date = earliest single, renumber when a new single is added); a command to convert between modes (preview first).
-- Covers: `cover.jpg` / `back.jpg` saved full size in the album folder; the embedded copy follows the preset.
-- Tests: generated FLAC/MP3 fixtures (ffmpeg in a test helper, or committed tiny files), round-trip tags, golden path tests, dry-run makes no changes.
+## M2 — Tags, paths, library operations ✅
+- `internal/tags`: the `Track` model (all preset fields, plus TrackTotal/DiscTotal, ReleaseType, `Identity` IDs, and OriginalAlbum/OriginalTrack for grouped singles). `Read`/`Write` for FLAC and MP3 (ID3v2.4; v2.3 is readable, including TYER). `Write` replaces only the tags this package manages and keeps all others (ReplayGain, comments, other pictures). FLAC is saved through a temp file and rename.
+  - Tag names follow Picard: `ARTISTS`, `ALBUMARTIST`, `RELEASETYPE`, `MUSICBRAINZ_TRACKID`/`_ALBUMID` (MP3: UFID + `TXXX:MusicBrainz Album Id`/`Album Type`), `DISCOGS_RELEASE_ID`, plus custom `YMLIB_SOURCE`, `YMLIB_SOURCE_TRACK_ID`, `YMLIB_ORIGINAL_ALBUM`, `YMLIB_ORIGINAL_TRACK`. Common aliases are read: `ALBUM ARTIST`, `YEAR`, `TOTALTRACKS`, `TOTALDISCS`, `n/total`.
+  - Track number is stored zero-padded (at least 2 digits): FLAC `TRACKNUMBER=01` with the total in `TRACKTOTAL=11`, MP3 `TRCK=01/11`. Disc number and totals are not padded. `retag` also rewrites files whose stored text is in another format (`1`, `3/12`), found with `StoredTrackNumber` vs `CanonicalTrackNumber`, since `Read` parses both forms into the same number.
+  - Cover fallback: if there is no "Front cover" picture, the first picture of type "Other" counts as the cover (ffmpeg and some rippers write that) and is the one replaced on write.
+  - `ApplyPreset` (drop fields not in the preset, shrink the cover to `CoverMaxPx`; IDs are always kept), `ShrinkPicture`, and `Diff` (user-visible field changes, used by all previews).
+  - **M4A: postponed.** `scan` lists M4A/OGG/OPUS/... as "unsupported format"; they are not indexed.
+- `internal/pathtmpl`: template variables `albumartist` (falls back to artist), `artist`, `album`, `title`, `genre`, `date`, `year`, `track`, `disc`, `ext`; zero-padding `{track:02}`; `{disc?}` gives `N-` only for multi-disc albums. Values are cleaned for FAT32 (`/\:*?"<>|` and control characters become `_`, no leading dot, trimmed spaces and trailing dots, DOS reserved names get `_`, segments ≤255 bytes, NFC). Fallbacks: Unknown Artist/Album/Genre/Year, Untitled. `config` validates the template on load.
+- `internal/library` (each operation is Plan → Apply):
+  - `Scan`: walks the library and skips hidden files and folders (including macOS `._*` files). Unchanged size+mtime means the file isn't re-read. Rows of deleted files are removed. Never modifies files. Reports unsupported and unreadable files.
+  - `PlanOrganize`/`ApplyOrganize`: target paths come from the template. An album is multi-disc if any of its tracks says so. Never overwrites: same-target and existing-file collisions become conflicts (checked case-insensitively, as on macOS/FAT). Folder images (`cover.jpg/png`, `back.jpg/png`, `folder.jpg`) move only when the whole folder moves to one place; when folders merge (e.g. grouped singles), the second image stays put as a conflict. Fixes folder letter case on case-insensitive file systems. Removes emptied folders (a lone `.DS_Store` counts as empty).
+  - `PlanRetag`/`ApplyRetag`: applies a preset. Before an embedded cover is shrunk or removed, the full-size image is saved as `cover.jpg`/`back.jpg` if the folder has none. Idempotent.
+  - `PlanSingles`/`ApplySingles`: a single is RELEASETYPE=single, or already grouped, or (no release type and) the only track of an album whose name matches the title (`X`, `X - Single`, `X (Single)`). Grouped mode renumbers each artist's singles by date (undated last), sets `<Artist> Singles`, and stores the original album and track. As-album mode restores them. Only tags change; `organize` moves the files.
+- Migration `0002_track_totals_and_singles.sql` adds `track_total`, `disc_total`, `release_type`, `original_album`, `original_track`.
+- Commands: `ymlib scan`, `ymlib organize [--apply]`, `ymlib retag [--preset X] [--apply]`, `ymlib singles [as-album|grouped] [--apply]`. **Preview is the default; `--apply` executes.** organize/retag/singles scan first.
+- Tests: fixtures `internal/testutil/testdata/tiny.{flac,mp3}` (0.1 s, untagged) and the `testutil.CopyAudio`/`testutil.JPEG` helpers. A manual end-to-end run on ffmpeg-tagged files found and fixed two bugs: "Other" cover type, and merged-folder image conflicts.
 
 ## M3 — Metadata ⏳
 - `internal/metadata`: `Provider` interface. Discogs client (personal token, 60 req/min) and MusicBrainz client (1 req/s, required User-Agent), plus Cover Art Archive.
@@ -115,6 +121,8 @@ artists:
 - Windows support via `internal/platform`.
 
 ## Open questions
+- Grouped singles: the plan said "album date = earliest single", but a file has only one Date tag and each single keeps its own. Not implemented. Decide whether it's needed (e.g. an ORIGINALDATE-style tag) or drop it.
+- Grouped singles: when single folders merge, only the first `cover.jpg` moves and the others stay in their old folders (reported as conflicts). Decide whether to keep, delete or rename them (e.g. `cover-<title>.jpg`).
 - M3: confirm the Genre/cover exception to whole-record matching (Q20 was answered by moving Discogs to primary; the exception itself is unconfirmed).
 - S3: standard vs. deluxe default (Q22) and "playlists only for chosen artists" (Q24) were taken as the recommended defaults because the answers repeated the questions. Confirm both.
-- M2: M4A tag writing (ffmpeg writer or postpone).
+- M4A tag writing was postponed in M2: an ffmpeg-based writer later, or a pure-Go library if one matures.

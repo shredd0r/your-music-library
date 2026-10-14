@@ -39,5 +39,6 @@ func NewRootCommand(dirs platform.Dirs) *cobra.Command {
 	}
 
 	root.AddCommand(newConfigCommand(a, loadConfig), newPresetCommand(a, loadConfig))
+	root.AddCommand(newLibraryCommands(a, loadConfig)...)
 	return root
 }

@@ -12,6 +12,8 @@ import (
 	"sort"
 
 	"gopkg.in/yaml.v3"
+
+	"your-music-library/internal/pathtmpl"
 )
 
 // DefaultPathTemplate places files under the album artist folder.
@@ -190,8 +192,8 @@ func (c Config) Validate() error {
 	if _, ok := c.Presets[c.ActivePreset]; !ok {
 		errs = append(errs, fmt.Errorf("active_preset %q does not exist", c.ActivePreset))
 	}
-	if c.PathTemplate == "" {
-		errs = append(errs, errors.New("path_template must not be empty"))
+	if _, err := pathtmpl.Parse(c.PathTemplate); err != nil {
+		errs = append(errs, err)
 	}
 	if c.Singles != SinglesAsAlbum && c.Singles != SinglesGrouped {
 		errs = append(errs, fmt.Errorf("singles must be %q or %q, got %q", SinglesAsAlbum, SinglesGrouped, c.Singles))

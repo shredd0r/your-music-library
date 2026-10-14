@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"your-music-library/internal/platform"
+	"your-music-library/internal/tags"
+	"your-music-library/internal/testutil"
 )
 
 func testDirs(t *testing.T) platform.Dirs {
@@ -86,5 +88,42 @@ func TestInvalidConfigIsReported(t *testing.T) {
 	// path works even with a broken config, so users can find the file
 	if _, err := run(t, dirs, "config", "path"); err != nil {
 		t.Errorf("config path should not need a valid config: %v", err)
+	}
+}
+
+func TestOrganizePreviewThenApply(t *testing.T) {
+	dirs := testDirs(t)
+	lib := filepath.Join(t.TempDir(), "music")
+	src := testutil.CopyAudio(t, "flac", filepath.Join(lib, "inbox", "x.flac"))
+	if err := tags.Write(src, tags.Track{Title: "Bad", Album: "Bad", AlbumArtist: "Michael Jackson", TrackNumber: 1}); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(dirs.Config, 0o755)
+	os.WriteFile(dirs.ConfigFile(), []byte("library_path: "+lib+"\n"), 0o644)
+
+	out, err := run(t, dirs, "organize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Michael Jackson/Bad/01 - Bad.flac") || !strings.Contains(out, "Preview only") {
+		t.Errorf("preview output:\n%s", out)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatal("preview moved the file")
+	}
+	if _, err := run(t, dirs, "organize", "--apply"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(lib, "Michael Jackson", "Bad", "01 - Bad.flac")); err != nil {
+		t.Errorf("file not moved: %v", err)
+	}
+}
+
+func TestMissingLibraryFolderIsReported(t *testing.T) {
+	dirs := testDirs(t)
+	os.MkdirAll(dirs.Config, 0o755)
+	os.WriteFile(dirs.ConfigFile(), []byte("library_path: /definitely/not/here\n"), 0o644)
+	if _, err := run(t, dirs, "scan"); err == nil || !strings.Contains(err.Error(), "library folder") {
+		t.Errorf("expected library folder error, got %v", err)
 	}
 }

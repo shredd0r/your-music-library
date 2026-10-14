@@ -126,6 +126,7 @@ func TestValidationErrors(t *testing.T) {
 		"no providers":    "providers: []\n",
 		"negative cover":  "presets:\n  x:\n    fields: [Title]\n    cover_max_px: -5\n",
 		"empty template":  "path_template: \"\"\n",
+		"bad template":    "path_template: \"{album}/{nope}.{ext}\"\n",
 		"unknown key":     "libary_path: /typo\n",
 		"duplicate field": "presets:\n  x:\n    fields: [Title, Title]\n",
 	}
