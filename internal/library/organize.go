@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"your-music-library/internal/cleanup"
 	"your-music-library/internal/pathtmpl"
 )
 
@@ -276,7 +277,9 @@ func (l *Library) removeEmptyDirs(dir string) {
 			return
 		}
 		if len(entries) == 1 && entries[0].Name() == ".DS_Store" {
-			os.Remove(filepath.Join(abs, ".DS_Store"))
+			if cleanup.Remove(filepath.Join(abs, ".DS_Store")) != nil {
+				return // folder stays; nothing else depends on it
+			}
 		} else if len(entries) > 0 {
 			return
 		}

@@ -17,6 +17,7 @@ import (
 	"golang.org/x/term"
 
 	"your-music-library/internal/cache"
+	"your-music-library/internal/cleanup"
 	"your-music-library/internal/library"
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/secrets"
@@ -59,7 +60,9 @@ func (a *app) openMetadata(ctx context.Context, db *sql.DB, warn io.Writer) (*me
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
-		store.Run(runCtx, time.Minute)
+		if err := store.Run(runCtx, time.Minute); err != nil {
+			fmt.Fprintf(warn, "warning: saving the lookup cache: %v\n", err)
+		}
 		close(done)
 	}()
 	stop := func() { cancel(); <-done }
@@ -105,13 +108,13 @@ func newMetadataCommands(a *app, loadConfig preRun) []*cobra.Command {
 			"Files that already have a release ID are skipped unless --force.\n" +
 			"Optional folders (relative to the library) limit the run.",
 		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			preset, _ := a.cfg.Preset(a.cfg.ActivePreset)
 			lib, db, err := a.openLibrary()
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			ctx, w, ew := cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr()
 			if err := scanQuietly(ctx, w, lib); err != nil {
 				return err
@@ -211,12 +214,12 @@ func newReviewCommand(a *app, loadConfig preRun) *cobra.Command {
 		Short:   "List albums that need a manual release choice",
 		Args:    cobra.NoArgs,
 		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			lib, db, err := a.openLibrary()
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			reviews, err := lib.Reviews(cmd.Context())
 			if err != nil {
 				return err
@@ -255,7 +258,7 @@ func newReviewCommand(a *app, loadConfig preRun) *cobra.Command {
 		Short:   "Tag a review's files with the chosen candidate (preview unless --apply)",
 		Args:    cobra.ExactArgs(2),
 		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			id, err1 := strconv.ParseInt(strings.TrimPrefix(args[0], "#"), 10, 64)
 			n, err2 := strconv.Atoi(args[1])
 			if err := errors.Join(err1, err2); err != nil {
@@ -266,7 +269,7 @@ func newReviewCommand(a *app, loadConfig preRun) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			ctx, w := cmd.Context(), cmd.OutOrStdout()
 			ms, err := a.openMetadata(ctx, db, cmd.ErrOrStderr())
 			if err != nil {
@@ -306,7 +309,7 @@ func newReviewCommand(a *app, loadConfig preRun) *cobra.Command {
 		Short:   "Close a review without changing files",
 		Args:    cobra.ExactArgs(1),
 		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			id, err := strconv.ParseInt(strings.TrimPrefix(args[0], "#"), 10, 64)
 			if err != nil {
 				return err
@@ -315,7 +318,7 @@ func newReviewCommand(a *app, loadConfig preRun) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			if err := lib.SkipReview(cmd.Context(), id); err != nil {
 				return err
 			}

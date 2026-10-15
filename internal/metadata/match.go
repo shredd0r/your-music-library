@@ -110,17 +110,37 @@ func absDur(d time.Duration) time.Duration {
 	return d
 }
 
-// better orders matches: higher score, then a track count closer to the
-// query (standard over deluxe), then the earlier release.
+// better orders matches: higher score, then titles that match the files
+// literally (an edition spelling "Rock With You." loses to "Rock With
+// You"), then a track count closer to the query (standard over deluxe),
+// then the earlier release.
 func better(q Query, a, b Match) bool {
 	if a.Score != b.Score {
 		return a.Score > b.Score
+	}
+	if la, lb := literal(q, a), literal(q, b); la != lb {
+		return la > lb
 	}
 	da, db := abs(len(a.Release.Tracks)-len(q.Tracks)), abs(len(b.Release.Tracks)-len(q.Tracks))
 	if da != db {
 		return da < db
 	}
 	return a.Release.Date < b.Release.Date
+}
+
+// literal counts album and track titles equal to the query's, ignoring
+// only letter case.
+func literal(q Query, m Match) int {
+	n := 0
+	if q.Album != "" && strings.EqualFold(strings.TrimSpace(q.Album), strings.TrimSpace(m.Release.Title)) {
+		n++
+	}
+	for i, qt := range q.Tracks {
+		if t, ok := m.Track(i); ok && strings.EqualFold(strings.TrimSpace(qt.Title), strings.TrimSpace(t.Title)) {
+			n++
+		}
+	}
+	return n
 }
 
 func abs(n int) int {

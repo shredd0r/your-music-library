@@ -9,6 +9,7 @@ import (
 	"path"
 	"time"
 
+	"your-music-library/internal/cleanup"
 	"your-music-library/internal/config"
 	"your-music-library/internal/metadata"
 )
@@ -24,7 +25,7 @@ type Review struct {
 }
 
 // addReview stores d, replacing open reviews that cover the same files.
-func (l *Library) addReview(ctx context.Context, d ReviewDraft) error {
+func (l *Library) addReview(ctx context.Context, d ReviewDraft) (err error) {
 	paths, err := json.Marshal(d.Paths)
 	if err != nil {
 		return err
@@ -41,7 +42,7 @@ func (l *Library) addReview(ctx context.Context, d ReviewDraft) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer cleanup.Rollback(&err, tx)
 	if _, err := tx.ExecContext(ctx, "DELETE FROM review_items WHERE status = 'open' AND paths = ?", string(paths)); err != nil {
 		return err
 	}
@@ -54,13 +55,13 @@ func (l *Library) addReview(ctx context.Context, d ReviewDraft) error {
 }
 
 // Reviews returns open review items, oldest first.
-func (l *Library) Reviews(ctx context.Context) ([]Review, error) {
+func (l *Library) Reviews(ctx context.Context) (_ []Review, err error) {
 	rows, err := l.db.QueryContext(ctx,
 		"SELECT id, path, paths, query, candidates, created_at FROM review_items WHERE status = 'open' ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cleanup.Close(&err, rows)
 	var out []Review
 	for rows.Next() {
 		r, err := scanReview(rows)

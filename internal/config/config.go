@@ -63,6 +63,9 @@ type Config struct {
 	Queue        QueueConfig
 	Cache        CacheConfig
 	Metadata     MetadataConfig
+	// SourcesDir holds source plugins (executables). Empty means
+	// "sources" next to config.yaml.
+	SourcesDir string
 	// Presets holds built-in and user presets; user presets with the same
 	// name replace built-ins.
 	Presets map[string]Preset
@@ -109,6 +112,7 @@ type fileConfig struct {
 	Queue        *QueueConfig          `yaml:"queue,omitempty"`
 	Cache        *CacheConfig          `yaml:"cache,omitempty"`
 	Metadata     *MetadataConfig       `yaml:"metadata,omitempty"`
+	SourcesDir   *string               `yaml:"sources_dir,omitempty"`
 	Presets      map[string]filePreset `yaml:"presets,omitempty"`
 }
 
@@ -167,6 +171,9 @@ func Parse(data []byte) (Config, error) {
 	}
 	if fc.Metadata != nil {
 		c.Metadata = *fc.Metadata
+	}
+	if fc.SourcesDir != nil {
+		c.SourcesDir = *fc.SourcesDir
 	}
 	for name, fp := range fc.Presets {
 		p, err := fp.toPreset(name)
@@ -247,6 +254,9 @@ func (c Config) Marshal() ([]byte, error) {
 		Queue:        &c.Queue,
 		Cache:        &c.Cache,
 		Metadata:     &c.Metadata,
+	}
+	if c.SourcesDir != "" {
+		fc.SourcesDir = &c.SourcesDir
 	}
 	for name, p := range c.Presets {
 		if p.Builtin {

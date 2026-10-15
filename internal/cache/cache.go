@@ -11,6 +11,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"your-music-library/internal/cleanup"
 )
 
 type entry struct {
@@ -107,12 +109,12 @@ func (s *Store) Flush(ctx context.Context) error {
 	return err
 }
 
-func (s *Store) write(ctx context.Context, pending map[string]entry) error {
+func (s *Store) write(ctx context.Context, pending map[string]entry) (err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer cleanup.Rollback(&err, tx)
 	for k, e := range pending {
 		if _, err := tx.ExecContext(ctx,
 			"INSERT OR REPLACE INTO cache_entries (key, value, created_at) VALUES (?, ?, ?)",

@@ -7,6 +7,9 @@ import (
 	"github.com/go-flac/flacpicture/v2"
 	"github.com/go-flac/flacvorbis/v2"
 	flac "github.com/go-flac/go-flac/v2"
+
+	"errors"
+	"your-music-library/internal/cleanup"
 )
 
 // Vorbis comment keys, following MusicBrainz Picard where a convention exists.
@@ -59,12 +62,12 @@ func canonicalVCKey(k string) string {
 
 type flacCodec struct{}
 
-func (flacCodec) read(path string) (Track, error) {
+func (flacCodec) read(path string) (_ Track, err error) {
 	f, err := flac.ParseFile(path)
 	if err != nil {
 		return Track{}, err
 	}
-	defer f.Close()
+	defer cleanup.Close(&err, f)
 
 	var t Track
 	var other *Picture
@@ -141,17 +144,36 @@ func (flacCodec) read(path string) (Track, error) {
 }
 
 func (flacCodec) write(path string, t Track) error {
+	// Write next to the original and rename, so a crash never leaves a
+	// half-written file in the library.
+	tmp := path + ".ymlib-tmp"
+	if err := buildFLAC(path, tmp, t); err != nil {
+		return errors.Join(err, cleanup.Remove(tmp))
+	}
+	if info, err := os.Stat(path); err == nil {
+		if err := os.Chmod(tmp, info.Mode()); err != nil {
+			return errors.Join(err, cleanup.Remove(tmp))
+		}
+	}
+	if err := rename(tmp, path); err != nil {
+		return errors.Join(err, cleanup.Remove(tmp))
+	}
+	return nil
+}
+
+// buildFLAC writes path's audio with t's tags to tmp.
+func buildFLAC(path, tmp string, t Track) (err error) {
 	f, err := flac.ParseFile(path)
 	if err != nil {
 		return err
 	}
+	defer cleanup.Close(&err, f)
 
 	var types []flacpicture.PictureType
 	for _, b := range f.Meta {
 		if b.Type == flac.Picture {
 			p, err := flacpicture.ParseFromMetaDataBlock(*b)
 			if err != nil {
-				f.Close()
 				return err
 			}
 			types = append(types, p.PictureType)
@@ -167,7 +189,6 @@ func (flacCodec) write(path string, t Track) error {
 		case flac.VorbisComment:
 			old, err := flacvorbis.ParseFromMetaDataBlock(*b)
 			if err != nil {
-				f.Close()
 				return err
 			}
 			comment.Vendor = old.Vendor
@@ -227,39 +248,21 @@ func (flacCodec) write(path string, t Track) error {
 		}
 		block, err := flacpicture.NewFromImageData(p.typ, "", p.pic.Data, p.pic.MIME)
 		if err != nil {
-			f.Close()
 			return err
 		}
 		pb := block.Marshal()
 		meta = append(meta, &pb)
 	}
 	f.Meta = meta
-
-	// Write next to the original and rename, so a crash never leaves a
-	// half-written file in the library.
-	tmp := path + ".ymlib-tmp"
-	err = f.Save(tmp)
-	f.Close()
-	if err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if info, err := os.Stat(path); err == nil {
-		os.Chmod(tmp, info.Mode())
-	}
-	if err := rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
+	return f.Save(tmp)
 }
 
-func (flacCodec) storedTrackNumber(path string) (string, error) {
+func (flacCodec) storedTrackNumber(path string) (_ string, err error) {
 	f, err := flac.ParseFile(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer cleanup.Close(&err, f)
 	for _, b := range f.Meta {
 		if b.Type != flac.VorbisComment {
 			continue

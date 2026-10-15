@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"your-music-library/internal/cleanup"
 	"your-music-library/internal/tags"
 )
 
@@ -84,12 +85,12 @@ func upsert(ctx context.Context, db execer, e Entry, now time.Time) error {
 }
 
 // Entries returns every indexed file ordered by path.
-func (l *Library) Entries(ctx context.Context) ([]Entry, error) {
+func (l *Library) Entries(ctx context.Context) (_ []Entry, err error) {
 	rows, err := l.db.QueryContext(ctx, "SELECT "+entryColumns+" FROM tracks ORDER BY path")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cleanup.Close(&err, rows)
 	var out []Entry
 	for rows.Next() {
 		e, err := scanEntry(rows)

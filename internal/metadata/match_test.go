@@ -174,3 +174,26 @@ func TestIdentifyChain(t *testing.T) {
 		}
 	})
 }
+
+func TestTieBreakPrefersLiteralTitles(t *testing.T) {
+	q := Query{Artist: "Michael Jackson", Album: "Off the Wall", Tracks: []QueryTrack{{Title: "Rock With You"}, {Title: "Off the Wall"}}}
+	clean := offTheWall()
+	clean.ID = "clean"
+	dotted := offTheWall()
+	dotted.ID, dotted.Title = "dotted", "Off The Wall."
+	dotted.Tracks = append([]Track(nil), dotted.Tracks...)
+	for i := range dotted.Tracks {
+		dotted.Tracks[i].Title += "."
+	}
+	for _, order := range [][]Release{{dotted, clean}, {clean, dotted}} {
+		p := &fakeProvider{name: "discogs", releases: map[string]Release{}}
+		for _, r := range order {
+			p.cands = append(p.cands, Candidate{ID: r.ID})
+			p.releases[r.ID] = r
+		}
+		res, err := (&Identifier{Providers: []Provider{p}, MinScore: 0.85}).Identify(context.Background(), q)
+		if err != nil || res.Best == nil || res.Best.Release.ID != "clean" {
+			t.Errorf("order %s,%s: best = %+v", order[0].ID, order[1].ID, res.Best)
+		}
+	}
+}

@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"fmt"
+	"your-music-library/internal/cleanup"
 )
 
 // Files caches blobs (cover images) as files named by the SHA-256 of
@@ -31,11 +34,15 @@ func openFiles(dir string, maxAge time.Duration, now func() time.Time) (*Files, 
 	if err != nil {
 		return nil, err
 	}
+	var errs []error
 	for _, e := range entries {
 		info, err := e.Info()
 		if err == nil && !e.IsDir() && info.ModTime().Before(f.cutoff()) {
-			os.Remove(filepath.Join(dir, e.Name()))
+			errs = append(errs, cleanup.Remove(filepath.Join(dir, e.Name())))
 		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("purging old covers: %w", err)
 	}
 	return f, nil
 }
@@ -68,12 +75,10 @@ func (f *Files) Put(key string, data []byte) error {
 	_, werr := tmp.Write(data)
 	cerr := tmp.Close()
 	if err := errors.Join(werr, cerr); err != nil {
-		os.Remove(tmp.Name())
-		return err
+		return errors.Join(err, cleanup.Remove(tmp.Name()))
 	}
 	if err := os.Rename(tmp.Name(), p); err != nil {
-		os.Remove(tmp.Name())
-		return err
+		return errors.Join(err, cleanup.Remove(tmp.Name()))
 	}
 	now := f.now()
 	return os.Chtimes(p, now, now)

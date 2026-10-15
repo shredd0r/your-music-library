@@ -81,3 +81,11 @@ func levenshtein(a, b []rune) int {
 	}
 	return prev[len(b)]
 }
+
+// Normalize is the comparison form used for exact matching of names
+// (case, accents, quotes and punctuation folded).
+func Normalize(s string) string { return normalize(s) }
+
+// NormalizeTitle is Normalize with edition noise removed, so
+// "Bad (2012 Remaster)" and "Bad" compare equal.
+func NormalizeTitle(s string) string { return normalize(editionNoise.ReplaceAllString(s, "")) }

@@ -50,5 +50,6 @@ func newRoot(a *app) *cobra.Command {
 	root.AddCommand(newConfigCommand(a, loadConfig), newPresetCommand(a, loadConfig))
 	root.AddCommand(newLibraryCommands(a, loadConfig)...)
 	root.AddCommand(newMetadataCommands(a, loadConfig)...)
+	root.AddCommand(newDownloadCommands(a, loadConfig)...)
 	return root
 }

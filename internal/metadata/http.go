@@ -110,7 +110,7 @@ func (c *httpClient) get(ctx context.Context, url, accept string) ([]byte, strin
 			return nil, "", err
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
-		resp.Body.Close()
+		_ = resp.Body.Close() // fully read; nothing to lose
 		if err != nil {
 			return nil, "", err
 		}
@@ -169,7 +169,7 @@ func (f *ImageFetcher) Fetch(ctx context.Context, url string) ([]byte, string, e
 		return nil, "", fmt.Errorf("%s: not a JPEG or PNG image (%s)", url, mime)
 	}
 	if f.files != nil {
-		f.files.Put(url, data)
+		_ = f.files.Put(url, data) // caching is best-effort; the image is returned anyway
 	}
 	return data, mime, nil
 }

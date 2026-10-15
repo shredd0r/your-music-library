@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"your-music-library/internal/cleanup"
 	"your-music-library/internal/tags"
 )
 
@@ -25,8 +26,7 @@ type ScanReport struct {
 // Scan walks the library folder and brings the index in line with the
 // files. It never modifies files. Files whose size and modification time
 // match the index are not re-read.
-func (l *Library) Scan(ctx context.Context) (ScanReport, error) {
-	var r ScanReport
+func (l *Library) Scan(ctx context.Context) (r ScanReport, err error) {
 	existing, err := l.Entries(ctx)
 	if err != nil {
 		return r, err
@@ -41,7 +41,7 @@ func (l *Library) Scan(ctx context.Context) (ScanReport, error) {
 	if err != nil {
 		return r, err
 	}
-	defer tx.Rollback()
+	defer cleanup.Rollback(&err, tx)
 	now := l.now()
 
 	err = filepath.WalkDir(l.root, func(path string, d fs.DirEntry, err error) error {

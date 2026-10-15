@@ -84,8 +84,7 @@ func (l *Library) PlanIdentify(ctx context.Context, id *metadata.Identifier, opt
 	if err != nil {
 		return plan, err
 	}
-	groups := map[string]*identifyGroup{}
-	var keys []string
+	var todo []Entry
 	for _, e := range es {
 		if !underAny(e.Path, opts.Prefixes) {
 			continue
@@ -94,8 +93,22 @@ func (l *Library) PlanIdentify(ctx context.Context, id *metadata.Identifier, opt
 			plan.Skipped++
 			continue
 		}
+		todo = append(todo, e)
+	}
+	plan.Matches, plan.Reviews, plan.Untitled, plan.Failed, err = identifyEntries(ctx, id, todo, opts.Progress)
+	return plan, err
+}
+
+// identifyEntries groups entries by album and looks each group up. Entries
+// only need tags and a Path used as key; files are not read, so this also
+// works for files that are not in the library yet.
+func identifyEntries(ctx context.Context, id *metadata.Identifier, es []Entry, progress func(done, total int, folder string)) (
+	matches []AlbumMatch, reviews []ReviewDraft, untitled []string, failed []FileError, err error) {
+	groups := map[string]*identifyGroup{}
+	var keys []string
+	for _, e := range es {
 		if strings.TrimSpace(e.Title) == "" {
-			plan.Untitled = append(plan.Untitled, e.Path)
+			untitled = append(untitled, e.Path)
 			continue
 		}
 		// grouped singles are looked up as their own release
@@ -128,16 +141,16 @@ func (l *Library) PlanIdentify(ctx context.Context, id *metadata.Identifier, opt
 	for i, key := range keys {
 		g := groups[key]
 		folder := path.Dir(g.entries[0].Path)
-		if opts.Progress != nil {
-			opts.Progress(i, len(keys), folder)
+		if progress != nil {
+			progress(i, len(keys), folder)
 		}
 		res, err := id.Identify(ctx, g.query)
 		if err != nil {
 			if ctx.Err() != nil {
-				return plan, ctx.Err()
+				return nil, nil, nil, nil, ctx.Err()
 			}
 			for _, e := range g.entries {
-				plan.Failed = append(plan.Failed, FileError{e.Path, err})
+				failed = append(failed, FileError{e.Path, err})
 			}
 			continue
 		}
@@ -146,12 +159,12 @@ func (l *Library) PlanIdentify(ctx context.Context, id *metadata.Identifier, opt
 			for _, e := range g.entries {
 				draft.Paths = append(draft.Paths, e.Path)
 			}
-			plan.Reviews = append(plan.Reviews, draft)
+			reviews = append(reviews, draft)
 			continue
 		}
-		plan.Matches = append(plan.Matches, buildAlbumMatch(folder, g.entries, *res.Best))
+		matches = append(matches, buildAlbumMatch(folder, g.entries, *res.Best))
 	}
-	return plan, nil
+	return matches, reviews, untitled, failed, nil
 }
 
 func buildAlbumMatch(folder string, entries []Entry, m metadata.Match) AlbumMatch {
@@ -228,7 +241,7 @@ func (l *Library) ApplyIdentify(ctx context.Context, plan IdentifyPlan, preset c
 		}
 		front, back := l.fetchCovers(ctx, am.Release, images, &r)
 		for _, it := range am.Items {
-			if err := l.writeRelease(ctx, it.Path, am.Release, it.track, front, back, preset); err != nil {
+			if err := l.writeRelease(ctx, it.Path, am.Release, it.track, front, back, preset, path.Dir(it.Path)); err != nil {
 				r.Failed = append(r.Failed, FileError{it.Path, err})
 				continue
 			}
@@ -266,7 +279,7 @@ func (l *Library) fetchCovers(ctx context.Context, rel metadata.Release, images 
 	return get(rel.FrontURL, "front"), get(rel.BackURL, "back")
 }
 
-func (l *Library) writeRelease(ctx context.Context, rel string, release metadata.Release, ti int, front, back *tags.Picture, preset config.Preset) error {
+func (l *Library) writeRelease(ctx context.Context, rel string, release metadata.Release, ti int, front, back *tags.Picture, preset config.Preset, imageDir string) error {
 	abs := l.abs(rel)
 	cur, err := tags.Read(abs)
 	if err != nil {
@@ -279,24 +292,41 @@ func (l *Library) writeRelease(ctx context.Context, rel string, release metadata
 	if back != nil {
 		want.Back = back
 	}
-	// full-size images go to the album folder before the preset shrinks them
-	dir := path.Dir(rel)
-	for _, pic := range []struct {
-		p    *tags.Picture
-		base string
-	}{{want.Cover, "cover"}, {want.Back, "back"}} {
-		if pic.p != nil && !l.hasFolderImage(dir, pic.base) {
-			if err := os.WriteFile(l.abs(path.Join(dir, pic.base+imageExt(pic.p.MIME))), pic.p.Data, 0o644); err != nil {
-				return err
-			}
-		}
+	return l.writeWithPreset(ctx, rel, want, preset, imageDir)
+}
+
+// writeWithPreset saves full-size pictures of t as cover.jpg/back.jpg in
+// imageDir (if missing), applies preset and writes t to rel.
+func (l *Library) writeWithPreset(ctx context.Context, rel string, t tags.Track, preset config.Preset, imageDir string) error {
+	if err := l.saveFolderImages(imageDir, t.Cover, t.Back); err != nil {
+		return err
 	}
-	want, err = tags.ApplyPreset(want, preset)
+	t, err := tags.ApplyPreset(t, preset)
 	if err != nil {
 		return err
 	}
-	if err := tags.Write(abs, want); err != nil {
+	if err := tags.Write(l.abs(rel), t); err != nil {
 		return err
 	}
 	return l.reindex(ctx, rel)
+}
+
+// saveFolderImages writes cover/back as full-size folder images unless
+// the folder already has them.
+func (l *Library) saveFolderImages(dir string, front, back *tags.Picture) error {
+	for _, pic := range []struct {
+		p    *tags.Picture
+		base string
+	}{{front, "cover"}, {back, "back"}} {
+		if pic.p == nil || l.hasFolderImage(dir, pic.base) {
+			continue
+		}
+		if err := os.MkdirAll(l.abs(dir), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(l.abs(path.Join(dir, pic.base+imageExt(pic.p.MIME))), pic.p.Data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -8,6 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"errors"
+	"your-music-library/internal/cleanup"
 	"your-music-library/internal/config"
 	"your-music-library/internal/library"
 	"your-music-library/internal/platform"
@@ -28,8 +30,7 @@ func (a *app) openLibrary() (*library.Library, *sql.DB, error) {
 	}
 	lib, err := library.Open(root, db, a.cfg.PathTemplate)
 	if err != nil {
-		db.Close()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, db.Close())
 	}
 	return lib, db, nil
 }
@@ -40,12 +41,12 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 		Short:   "Index the library folder (reads tags, never changes files)",
 		Args:    cobra.NoArgs,
 		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			lib, db, err := a.openLibrary()
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			r, err := lib.Scan(cmd.Context())
 			if err != nil {
 				return err
@@ -63,12 +64,12 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 			"path_template. Nothing moves without --apply. Existing files are never overwritten.",
 		Args:    cobra.NoArgs,
 		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			lib, db, err := a.openLibrary()
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			ctx, w := cmd.Context(), cmd.OutOrStdout()
 			if err := scanQuietly(ctx, w, lib); err != nil {
 				return err
@@ -114,7 +115,7 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 			"image is saved as cover.jpg/back.jpg in the album folder if none exists.",
 		Args:    cobra.NoArgs,
 		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			name := retagPreset
 			if name == "" {
 				name = a.cfg.ActivePreset
@@ -127,7 +128,7 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			ctx, w := cmd.Context(), cmd.OutOrStdout()
 			if err := scanQuietly(ctx, w, lib); err != nil {
 				return err
@@ -176,7 +177,7 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 		Args:      cobra.MaximumNArgs(1),
 		ValidArgs: []string{string(config.SinglesAsAlbum), string(config.SinglesGrouped)},
 		PreRunE:   loadConfig,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			mode := a.cfg.Singles
 			if len(args) == 1 {
 				mode = config.SinglesMode(args[0])
@@ -188,7 +189,7 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer cleanup.Close(&err, db)
 			ctx, w := cmd.Context(), cmd.OutOrStdout()
 			if err := scanQuietly(ctx, w, lib); err != nil {
 				return err
@@ -279,3 +280,5 @@ func reportApply(w io.Writer, verb string, r library.ApplyReport) error {
 	}
 	return nil
 }
+
+func expandHome(p string) (string, error) { return platform.ExpandHome(p) }

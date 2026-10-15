@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	_ "modernc.org/sqlite"
+
+	"errors"
 )
 
 //go:embed migrations/*.sql
@@ -63,8 +65,7 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrating %s: %w", path, err)
+		return nil, errors.Join(fmt.Errorf("migrating %s: %w", path, err), db.Close())
 	}
 	return db, nil
 }
@@ -103,13 +104,11 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 		if _, err := tx.Exec(m.sql); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("%s: %w", m.name, err)
+			return errors.Join(fmt.Errorf("%s: %w", m.name, err), tx.Rollback())
 		}
 		// PRAGMA cannot take bound parameters; version is an int we control.
 		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
-			tx.Rollback()
-			return err
+			return errors.Join(err, tx.Rollback())
 		}
 		if err := tx.Commit(); err != nil {
 			return err

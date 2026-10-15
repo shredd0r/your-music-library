@@ -77,6 +77,7 @@ queue:
 cache:
   max_age_days: 30
 providers: [musicbrainz]
+sources_dir: /plugins
 presets:
   car:
     fields: [Title, Artist, "Track Number", "Picture Cover"]
@@ -86,7 +87,7 @@ presets:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.LibraryPath != "/music" || c.Singles != SinglesGrouped || c.Queue.Parallel != 4 || c.Cache.MaxAgeDays != 30 {
+	if c.LibraryPath != "/music" || c.Singles != SinglesGrouped || c.Queue.Parallel != 4 || c.Cache.MaxAgeDays != 30 || c.SourcesDir != "/plugins" {
 		t.Errorf("unexpected config: %+v", c)
 	}
 	car, ok := c.Preset("car")

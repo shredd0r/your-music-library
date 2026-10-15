@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/bogem/id3v2/v2"
+
+	"your-music-library/internal/cleanup"
 )
 
 // TXXX descriptions, following MusicBrainz Picard where a convention exists.
@@ -34,12 +36,12 @@ var managedTextFrames = []string{"TIT2", "TALB", "TPE1", "TPE2", "TDRC", "TYER",
 
 type mp3Codec struct{}
 
-func (mp3Codec) read(path string) (Track, error) {
+func (mp3Codec) read(path string) (_ Track, err error) {
 	tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
 	if err != nil {
 		return Track{}, err
 	}
-	defer tag.Close()
+	defer cleanup.Close(&err, tag)
 
 	text := func(id string) string { return strings.TrimRight(tag.GetTextFrame(id).Text, "\x00") }
 	t := Track{
@@ -115,12 +117,12 @@ func (mp3Codec) read(path string) (Track, error) {
 	return t, nil
 }
 
-func (mp3Codec) write(path string, t Track) error {
+func (mp3Codec) write(path string, t Track) (err error) {
 	tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
 	if err != nil {
 		return err
 	}
-	defer tag.Close()
+	defer cleanup.Close(&err, tag)
 
 	// Keep unmanaged TXXX, UFID and APIC frames; drop managed ones.
 	var keepTXXX []id3v2.UserDefinedTextFrame
@@ -208,12 +210,12 @@ func (mp3Codec) write(path string, t Track) error {
 	return tag.Save()
 }
 
-func (mp3Codec) storedTrackNumber(path string) (string, error) {
+func (mp3Codec) storedTrackNumber(path string) (_ string, err error) {
 	tag, err := id3v2.Open(path, id3v2.Options{Parse: true, ParseFrames: []string{"TRCK"}})
 	if err != nil {
 		return "", err
 	}
-	defer tag.Close()
+	defer cleanup.Close(&err, tag)
 	return strings.TrimRight(tag.GetTextFrame("TRCK").Text, "\x00"), nil
 }
 
