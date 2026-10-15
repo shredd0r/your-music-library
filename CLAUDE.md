@@ -35,12 +35,15 @@ internal/secrets    API tokens: OS keychain, env var override
 internal/source     source plugin protocol (JSON over stdin/stdout), discovery; testdata/fakesource = test plugin
 internal/queue      persistent download queue (queue_jobs)
 internal/download   queue runner: resolve, download, verify, source tags, ingest
+internal/tui        Bubble Tea UI (ymlib with no args / ymlib tui): screens over the packages above
+internal/termimg    terminal images: Kitty Unicode placeholders, half-block fallback
 internal/platform   OS abstraction (XDG-style dirs on macOS/Linux; Windows later)
 internal/store      SQLite (modernc.org/sqlite) + embedded migrations in migrations/NNNN_*.sql
 internal/testutil   shared fixtures: tiny.flac/tiny.mp3, CopyAudio, JPEG
+examples/plugins    example source plugins (shelf.py: Python, stdlib only; tested by internal/source)
 spikes/             throwaway experiments, each its own Go module; not part of the app
 ```
-Planned packages (see MILESTONES.md): `tui`, `devsync` (S5).
+Planned packages (see MILESTONES.md): `devsync` (S5).
 
 ## Rules
 - **Test-first.** Tests never use the network, the real home directory or the real keychain (`secrets.UseMockKeychain()`). HTTP providers use recorded responses in `internal/metadata/testdata` served by `httptest`; record new ones with `curl` (MusicBrainz needs a User-Agent and allows 1 request/s). Audio fixtures are generated or tiny committed files.
@@ -51,6 +54,7 @@ Planned packages (see MILESTONES.md): `tui`, `devsync` (S5).
 - **Config:** unknown YAML keys and fields are errors (strict decoding). New settings get a default in `config.Default()`, a check in `Validate()`, and tests.
 - **No browser in the core.** Download sources are external plugins (JSON over stdin/stdout, protocol in `internal/source/source.go`). Do not build plugins or integrations for unlicensed sources (lucida.to, monochrome.st and similar); the user knows this. Tests use the fake plugin (`testutil.FakeSourceDir`).
 - **Manual runs and the keychain:** a Discogs token may be stored in the real keychain. Clearing `YMLIB_DISCOGS_TOKEN` doesn't hide it; use `providers: [musicbrainz]` in a temp config to avoid using it.
-- Logic lives in `internal/*` packages. The CLI and the future TUI are thin layers over it.
+- Logic lives in `internal/*` packages. The CLI and the TUI are thin layers over it.
+- TUI: work that touches disk, network or plugins runs in a `tea.Cmd` and returns a message; screens never block in `update`. Tests drive `App.Update` through the harness in `internal/tui/tui_test.go` (no real terminal), so keep tickers behind `Deps.Refresh` (0 in tests).
 - Match the existing style: short doc comments on exported identifiers, table-driven or focused tests, errors wrapped with context.
 - The user makes git commits themselves. Don't commit unless asked.

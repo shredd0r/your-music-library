@@ -51,5 +51,19 @@ func newRoot(a *app) *cobra.Command {
 	root.AddCommand(newLibraryCommands(a, loadConfig)...)
 	root.AddCommand(newMetadataCommands(a, loadConfig)...)
 	root.AddCommand(newDownloadCommands(a, loadConfig)...)
+	root.AddCommand(newTUICommand(a, loadConfig))
+
+	// Without a command, a terminal session opens the UI; scripts and
+	// pipes get the help text.
+	root.Args = cobra.NoArgs
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if !interactive() {
+			return cmd.Help()
+		}
+		if err := loadConfig(cmd, args); err != nil {
+			return err
+		}
+		return a.runTUI(cmd)
+	}
 	return root
 }

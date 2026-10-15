@@ -2,12 +2,13 @@
 
 A command-line tool for keeping a local music collection clean: it indexes your files, looks up correct metadata on **Discogs** and **MusicBrainz**, writes tags in the format you choose, downloads covers, and sorts files into a consistent `Artist/Album/01 - Title.flac` layout.
 
-> **Status: `0.1.0-dev`, Stage 1 in progress.** Tagging, organizing, metadata lookup, importing and plugin-based downloading work. The terminal UI, playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
+> **Status: `0.1.0-dev`, Stage 1 complete.** Tagging, organizing, metadata lookup, importing, plugin-based downloading and the terminal UI work. Playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
 
 ## What it does today
 
 | Feature | Command |
 |---|---|
+| Terminal UI: search and download, queue, library browser with covers and tag editing, review, presets | `ymlib` |
 | Index your music folder (reads tags only, changes nothing) | `ymlib scan` |
 | Identify albums on Discogs/MusicBrainz and write tags and covers | `ymlib identify` |
 | Choose a release by hand when a match isn't certain | `ymlib review` |
@@ -59,6 +60,22 @@ ymlib review apply 1 2 --apply        # review #1, candidate 2
 ymlib organize
 ymlib organize --apply
 ```
+
+## Terminal UI
+
+Run `ymlib` with no arguments, or `ymlib tui`:
+
+| Screen | What you do there |
+|---|---|
+| **1 Search** | `/` to type a query, `ctrl+t` to switch between tracks and albums, `enter` to search. Results show ✓ in library, ≈ other edition, ↓ queued, plus details and the cover. `enter` or `d` downloads. |
+| **2 Queue** | Jobs and the download log. `s` start/resume, `x` stop, `r`/`R` retry one/all failed, `c`/`C` clear finished (and failed). |
+| **3 Library** | Albums (`/` filters by artist, album or track title), tracks, tags and cover. `e` edits the album's or the track's tags: preview first, `y` to write. `s` rescans. |
+| **4 Review** | Albums without a confident match: your files next to each candidate release (`←→`), with cover and tracklist. `enter` previews, `y` writes, `s` skips. |
+| **5 Settings** | Configuration and presets. `enter` makes a preset active, saved to `config.yaml` with your comments kept. |
+
+`tab` or `1`–`5` switch screens, `q` quits, `esc` leaves a text box. Quitting stops downloads; they resume next time.
+
+Covers are real images in **Kitty** and **Ghostty**. Other terminals (iTerm2, Apple Terminal, inside tmux) get colored half-blocks. Set `YMLIB_IMAGES=kitty` or `YMLIB_IMAGES=halfblock` to choose.
 
 ## Commands
 
@@ -121,7 +138,7 @@ How a download proceeds:
 4. Temporary failures are retried up to 3 times (after 30 s, 2 min, 8 min).
 5. When all tracks of an album are in, the album is identified once, tagged with the active preset and filed by `path_template`. Nothing half-finished ever appears in the library.
 
-**Source plugins.** ymlib doesn't include any download source. A source is a separate program you put in `sources_dir` (default `~/.config/ymlib/sources/`), named after its file. ymlib runs it once per request, as `<plugin> info|search|resolve|download`, with a JSON request on stdin and a JSON answer on stdout. The protocol is documented in [`internal/source/source.go`](internal/source/source.go), and [`internal/source/testdata/fakesource`](internal/source/testdata/fakesource/main.go) is a complete example. Plugin authors are responsible for using services in line with their terms.
+**Source plugins.** ymlib doesn't include any download source. A source is a separate program you put in `sources_dir` (default `~/.config/ymlib/sources/`), named after its file. ymlib runs it once per request, as `<plugin> info|search|resolve|download`, with a JSON request on stdin and a JSON answer on stdout. The protocol is documented in [`internal/source/source.go`](internal/source/source.go), [`examples/plugins/shelf.py`](examples/plugins/shelf.py) is a working Python example (standard library only) that offers music from a folder you own, such as a NAS share or Bandcamp purchases. Symlink or copy it into the sources folder, make it executable, and set its root in `.shelf.json` next to it (`{"root": "~/Music/Shelf"}`) or in `YMLIB_SHELF_ROOT`. The Go test plugin [`internal/source/testdata/fakesource`](internal/source/testdata/fakesource/main.go) is another example. Plugin authors are responsible for using services in line with their terms.
 
 ### `config`, `preset`, `auth`
 ```sh
@@ -216,5 +233,4 @@ Project docs:
 
 ## Roadmap
 
-- **M5:** terminal UI with cover art (Kitty/iTerm2 graphics, half-block fallback).
-- **Later:** YAML batch download lists, artist discography playlists (`.m3u8`), sync to SD cards, players and phones (including players with internal memory plus an SD card, split automatically or by hand).
+- **Next stages:** YAML batch download lists, artist discography playlists (`.m3u8`), sync to SD cards, players and phones (including players with internal memory plus an SD card, split automatically or by hand).

@@ -60,8 +60,14 @@ func TestDiscoverSkipsNonExecutables(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(dir, ".hidden"), []byte("x"), 0o755)
 	os.WriteFile(filepath.Join(dir, "good.sh"), []byte("#!/bin/sh\n"), 0o755)
+	// plugins are often symlinked from where they are developed
+	other := t.TempDir()
+	os.WriteFile(filepath.Join(other, "linked.py"), []byte("#!/bin/sh\n"), 0o755)
+	os.Symlink(filepath.Join(other, "linked.py"), filepath.Join(dir, "linked.py"))
+	os.Symlink(filepath.Join(other, "missing"), filepath.Join(dir, "broken"))
+	os.Symlink(other, filepath.Join(dir, "dirlink"))
 	plugins, err := Discover(dir)
-	if err != nil || len(plugins) != 1 || plugins[0].Name != "good" {
+	if err != nil || len(plugins) != 2 || plugins[0].Name != "good" || plugins[1].Name != "linked" {
 		t.Errorf("Discover = %+v, %v", plugins, err)
 	}
 	if plugins, err := Discover(filepath.Join(dir, "missing")); err != nil || plugins != nil {

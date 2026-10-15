@@ -27,8 +27,9 @@ type Plugin struct {
 	Path string
 }
 
-// Discover finds plugins in dir: executable regular files, named by their
-// file name without extension. A missing dir means no plugins.
+// Discover finds plugins in dir: executable regular files (or symlinks to
+// them), named by their file name without extension. A missing dir means
+// no plugins.
 func Discover(dir string) ([]*Plugin, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -42,7 +43,7 @@ func Discover(dir string) ([]*Plugin, error) {
 		if strings.HasPrefix(e.Name(), ".") || e.IsDir() {
 			continue
 		}
-		info, err := e.Info()
+		info, err := os.Stat(filepath.Join(dir, e.Name())) // follows symlinks
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			continue
 		}

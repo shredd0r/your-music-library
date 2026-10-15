@@ -14,8 +14,9 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | M2 | Tags read/write, path template, `scan` / `organize` / `retag`, singles modes | ✅ 2026-10-14 |
 | M3 | Metadata providers (Discogs → MusicBrainz), cache, Needs Review | ✅ 2026-10-14 |
 | M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ✅ 2026-10-14 |
-| M5 | TUI v1 | ⏳ next |
+| M5 | TUI v1 | ✅ 2026-10-15 |
 | **Later stages** | | |
+| P2 | Plugin protocol v2: plugins keep running until `close` | ⏳ planned |
 | S2 | Duplicate detection polished across sources | ⏳ |
 | S3 | YAML batch download list | ⏳ |
 | S4 | Artist playlists | ⏳ |
@@ -94,13 +95,48 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 - Config: `sources_dir`.
 - Commands: `ymlib sources`, `ymlib search [--album] [--source S] [--limit N] <query>` (✓/≈ flags), `ymlib download [--album] [--force] [--no-run] <source:id>...`, `ymlib queue [run|retry [id]|clear [--failed]]`, `ymlib import <folder> [--apply] [--move] [--force] [--no-lookup]` (refuses folders inside the library).
 - Verified live: fake plugin + real MusicBrainz (album and single), and once with real Discogs (search works against the real API).
+- Added 2026-10-15: `examples/plugins/shelf.py`, a Python (stdlib only) example plugin that offers music from a folder the user owns (`Artist/Album/NN - Title.ext`; FLAC tags and length read from the file). `TestPythonExamplePlugin` runs it through the plugin runner (skipped without `python3`). `Discover` now follows symlinks, so a plugin can be linked into `sources_dir`.
 
-## M5 — TUI v1 ⏳
-- Bubble Tea. Screens: Search & Download (results with cover, ✓/≈ flags), Queue, Library browser (tags, cover viewer, edit fields), Needs Review (candidates side by side), Settings/Presets. Devices & Sync screen arrives with S5.
-- Cover renderer from the M0 spike (Kitty / iTerm2 / half-block).
-- The TUI calls the same `internal/*` packages as the CLI; no logic lives only in the TUI.
+## M5 — TUI v1 ✅
+- `ymlib` with no arguments, in a terminal, opens the UI (also `ymlib tui`). Scripts and pipes get the help text. Bubble Tea v2 (`charm.land/bubbletea/v2`), bubbles textinput, lipgloss; the 16 terminal colors, so it follows the terminal theme.
+- Screens: **Search** (tracks/albums from all plugins, ✓/≈/↓ flags, details and cover; enter queues and starts downloads), **Queue** (jobs, runner log, start/stop, retry, clear), **Library** (albums by folder, tracks, tags, cover; filter; rescan; edit album or track tags with a preview), **Review** (your files next to each candidate release, with cover and tracklist; preview, apply or skip), **Settings** (configuration, presets; enter makes a preset active).
+- Keys: tab / shift+tab / 1-5 switch screens, q quits, ctrl+c always quits. They are off while typing; `/` starts typing, esc leaves the text box. Quitting stops running downloads; they resume next time.
+- Logic stays in `internal/*`. New for the UI: `library.PlanEdit`/`ApplyEdit` (`TagEdit`, `FieldValue`) and `library.Cover`, plus `config.SetActivePreset`, which changes only that key and keeps comments. The edit form shows only the active preset's fields.
+- Covers: `internal/termimg` (from the M0 spike). Kitty and Ghostty use the Kitty graphics protocol with **Unicode placeholders**: the image is sent once, then drawn as ordinary cells, so the cell-based renderer can lay it out. True color is forced so the image id in the placeholder color survives. Images are freed on exit. Everything else, including iTerm2, Apple Terminal and tmux, uses half-blocks. iTerm2's own protocol draws at the cursor and can't be laid out as cells. `YMLIB_IMAGES=kitty|halfblock` overrides the detection.
+- Downloads run in the background (`download.Runner`). Log lines come back as messages, and if jobs are added just as a run ends it starts again. Warnings from opening metadata providers appear in the status line, never printed over the UI.
+- Tests: `internal/tui` drives the App through Update with a synchronous command runner, using a real library, SQLite and the fake source plugin: search → download → library, album downloads, queue retry and clear, album and track edits, review apply and skip, preset switch, layout fits 140×40, 80×24 and 50×12, and Kitty and half-block covers. A smoke run of the binary in a pseudo-terminal confirmed start, rendering and quit, and that 288 placeholder cells, each with both marks, reach the terminal.
+- **Check by eye:** covers in Ghostty or Kitty (placeholders) and in Apple Terminal (half-blocks, 256 colors).
+- Devices & Sync screen comes with S5. organize, retag, identify, singles and import stay CLI-only for now.
 
 ---
+
+## P2 — Plugin protocol v2: running plugins ⏳ (planned 2026-10-15)
+Why: protocol v1 starts the plugin for every request, so it can't keep a login session, open connections, caches or rate-limit timers between calls. Writing its own state files is not the answer.
+
+**Lifecycle**
+- ymlib starts a plugin on its **first request** (lazily). It then stays running and answers further requests.
+- ymlib sends **`close`** when it no longer needs the plugin. The plugin finishes or cancels its work, cleans up (logs out, closes connections, removes temp files), answers, and exits.
+- `close` is sent when the TUI quits, when a CLI command finishes, and after the plugin has been idle for a while (proposed: 5 minutes). The next request starts it again.
+- If the plugin hasn't exited a few seconds after `close` (proposed: 5 s), ymlib kills it, so a stuck plugin never blocks quitting.
+- If the plugin crashes, its in-flight requests fail and the queue retries them as usual (normal backoff). The next request starts a new process.
+
+**Wire format**
+- One JSON message per line on stdin and stdout. Requests carry an `id` and a `command`; each answer echoes the `id`: `{"id": 7, "command": "search", "query": "...", ...}` → `{"id": 7, "results": [...]}`, errors as `{"id": 7, "error": "..."}`.
+- Ids let several requests run at once (`queue.parallel` downloads share one process); answers may come back in any order.
+- stdout carries only protocol messages; logs go to stderr.
+- Commands are the v1 set (`info`, `search`, `resolve`, `download`) plus `close`.
+
+**Compatibility**
+- A plugin opts in through `info`, e.g. `{"protocol": 2, "persistent": true}` (exact handshake to be settled). Plugins that don't keep the v1 behaviour: one process per request. v1 plugins keep working.
+- `examples/plugins/shelf.py` gets a v2 version (or mode) as the reference, and `fakesource` gains a v2 mode for tests.
+
+**Code**
+- `internal/source`: a process manager per plugin (lazy start, request ids, concurrent requests, idle timer, `close` with a kill deadline, restart after a crash) behind the same `Plugin` methods, so `download.Runner`, the CLI and the TUI don't change. The TUI and CLI call a `CloseAll` on exit.
+- Tests: fake plugin in v2 mode: one process serves many requests (state kept, e.g. a call counter), concurrent requests with out-of-order answers, idle close, `close` ignored → killed, crash → restart, v1 plugins unchanged.
+
+**Possible extensions (not part of P2 unless decided)**
+- Progress messages during downloads (`{"id": 7, "progress": 0.42}`) for the Queue screen, and cancelling a request by message.
+- State that must survive app restarts (e.g. a login token): ymlib stores it for the plugin (a `plugin_state` table, secrets in the keychain) instead of the plugin writing files. Only once a plugin needs it.
 
 ## S2 — Duplicate detection across sources ⏳
 Tune the matching tiers once real sources and Discogs data exist (Discogs rarely has ISRC/MBID, so tier 3 does more of the work).
@@ -171,5 +207,7 @@ Decided 2026-10-15 (answers in `ANSWERS.md`, "Sync update").
 - Genre/cover exception to whole-record matching (Q20) is still not implemented: with Discogs primary, genre is almost always present; covers are missing only when a provider has none. Decide whether it's still wanted.
 - S3: standard vs. deluxe default (Q22) and "playlists only for chosen artists" (Q24) were taken as the recommended defaults because the answers repeated the questions. Confirm both.
 - M4A tag writing was postponed in M2: an ffmpeg-based writer later, or a pure-Go library if one matures.
+- P2: idle timeout (proposed 5 min) and kill deadline after `close` (proposed 5 s): confirm, and whether they're configurable.
+- P2: how a plugin declares v2 (`protocol: 2` alone, or plus `persistent: true`), and whether v2 plugins may still be run once per request.
 - S5: when the fit check finds music that doesn't fit, should `--apply` sync everything that does fit and report the rest (current assumption), or refuse until the plan fits completely?
 - S5: an artist split by album across two storages can't have one relative-path `.m3u8` playlist. Should it get one playlist per storage, or none?
