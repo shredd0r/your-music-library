@@ -2,7 +2,7 @@
 
 A command-line tool for keeping a local music collection clean: it indexes your files, looks up correct metadata on **Discogs** and **MusicBrainz**, writes tags in the format you choose, downloads covers, and sorts files into a consistent `Artist/Album/01 - Title.flac` layout.
 
-> **Status: `0.1.0-dev`, Stage 1 in progress.** Tagging, organizing and metadata lookup work. Downloading from sources, the terminal UI, playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
+> **Status: `0.1.0-dev`, Stage 1 in progress.** Tagging, organizing, metadata lookup, importing and plugin-based downloading work. The terminal UI, playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
 
 ## What it does today
 
@@ -14,6 +14,8 @@ A command-line tool for keeping a local music collection clean: it indexes your 
 | Apply a metadata preset, e.g. slim tags and small covers for MP3 players | `ymlib retag` |
 | Rename and move files according to a path template | `ymlib organize` |
 | Group singles into one `<Artist> Singles` album, or split them back | `ymlib singles` |
+| Import a folder (rips, purchases) into the library | `ymlib import` |
+| Search and download through source plugins | `ymlib search`, `ymlib download`, `ymlib queue` |
 
 **Nothing changes without asking.** Every command that modifies files shows a preview first and acts only with `--apply`. Files are never overwritten. Unknown tags (ReplayGain, comments, other pictures) are kept.
 
@@ -94,6 +96,33 @@ Moves files to the paths given by `path_template`. `cover.jpg` and other folder 
 
 Only tags change; run `organize` afterwards to move the files. A file counts as a single if its release type is `single`, or if it's the only track of an album named like the track (`X`, `X - Single`).
 
+### `import <folder> [--apply] [--move] [--force] [--no-lookup]`
+Brings audio files from outside the library in (CD rips, Bandcamp downloads, …).
+- Tracks already in the library are skipped (`--force` imports them anyway).
+- Albums are identified like `identify`, and files are tagged with the active preset and copied to their `path_template` location.
+- `--move` deletes the originals after a successful import. `--no-lookup` keeps the files' own tags.
+
+### Downloads: `sources`, `search`, `download`, `queue`
+```sh
+ymlib sources                          # installed source plugins
+ymlib search rock with you             # tracks; ✓ = in library, ≈ = other edition in library
+ymlib search --album off the wall
+ymlib download fake:t1                 # <source>:<id> from the search results
+ymlib download --album fake:a1
+ymlib queue                            # jobs and results
+ymlib queue run                        # resume after Ctrl-C or a crash
+ymlib queue retry [job-id]             # failed jobs again
+ymlib queue clear [--failed]
+```
+How a download proceeds:
+1. Albums are split into tracks, and tracks already in the library are skipped.
+2. Each track is downloaded into a hidden staging folder inside the library.
+3. The file is checked: it must decode (with ffmpeg, if installed), and its length must match what the source announced.
+4. Temporary failures are retried up to 3 times (after 30 s, 2 min, 8 min).
+5. When all tracks of an album are in, the album is identified once, tagged with the active preset and filed by `path_template`. Nothing half-finished ever appears in the library.
+
+**Source plugins.** ymlib doesn't include any download source. A source is a separate program you put in `sources_dir` (default `~/.config/ymlib/sources/`), named after its file. ymlib runs it once per request, as `<plugin> info|search|resolve|download`, with a JSON request on stdin and a JSON answer on stdout. The protocol is documented in [`internal/source/source.go`](internal/source/source.go), and [`internal/source/testdata/fakesource`](internal/source/testdata/fakesource/main.go) is a complete example. Plugin authors are responsible for using services in line with their terms.
+
 ### `config`, `preset`, `auth`
 ```sh
 ymlib config path        # where config, database and cache live
@@ -120,7 +149,8 @@ metadata:
 cache:
   max_age_days: 180                # cached lookups older than this are deleted
 queue:
-  parallel: 2                      # reserved for downloads (not used yet)
+  parallel: 2                      # simultaneous downloads
+sources_dir: ""                    # source plugins; default ~/.config/ymlib/sources
 presets:
   car:                             # your own presets
     fields: [Title, Artist, Album, Track Number, Picture Cover]
@@ -163,19 +193,20 @@ Names are made safe for FAT32/exFAT (SD cards, players): characters like `/ \ : 
 | Index and cache database | `~/.local/share/ymlib/library.db` (`$XDG_DATA_HOME`) |
 | Cover image cache | `~/.cache/ymlib/covers` (`$XDG_CACHE_HOME`) |
 | Discogs token | OS keychain (`YMLIB_DISCOGS_TOKEN` overrides it) |
+| Download staging | `<library>/.ymlib-incoming/` (hidden; files that failed to import stay here) |
 
-The database is only an index; your files' tags are the source of truth. Deleting `library.db` loses nothing except cached lookups and open review items: run `ymlib scan` to rebuild it.
+The database is only an index; your files' tags are the source of truth. Deleting `library.db` loses only cached lookups, open review items and the download queue: run `ymlib scan` to rebuild the index.
 
 ## Development
 
 ```sh
 make test     # go test ./...
-make lint     # gofmt check, go vet, staticcheck (pinned in go.mod as a Go tool)
+make lint     # golangci-lint (installed into bin/ by `make install-lint`)
 make check    # lint + test
 make fmt
 ```
 
-Tests never touch the network, your home directory or your keychain. Provider responses are recorded fixtures in `internal/metadata/testdata`.
+Tests never touch the network, your home directory or your keychain. Provider responses are recorded fixtures in `internal/metadata/testdata`. Download tests use a fake source plugin, built automatically from `internal/source/testdata/fakesource`.
 
 Project docs:
 - [SPEC.md](SPEC.md): the original idea.
@@ -185,6 +216,5 @@ Project docs:
 
 ## Roadmap
 
-- **M4:** source plugins (external programs speaking JSON over stdin/stdout), local import inbox, persistent download queue, "already in library" detection.
 - **M5:** terminal UI with cover art (Kitty/iTerm2 graphics, half-block fallback).
-- **Later:** YAML batch download lists, artist discography playlists (`.m3u8`), sync to SD cards, players and phones.
+- **Later:** YAML batch download lists, artist discography playlists (`.m3u8`), sync to SD cards, players and phones (including players with internal memory plus an SD card, split automatically or by hand).

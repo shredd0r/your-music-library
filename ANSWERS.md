@@ -39,3 +39,10 @@ In addition, I though about all features and commands. I really like way claude 
 
 Q34 - Its better has two layers - in-memory, when app is active and SQLite - saving cache when exit from app for next run app. Also need to add clear cache after specific time, for example if cache saved 6 month ago we should delete it - the cache will not increase
 Q35 - forget about it, maybe i brainstorm this feature for next stages.
+
+## Sync update (2026-10-15)
+Request: sync should handle devices, not only external storages. Some MP3 players have two storages (internal memory and an SD card). The user can group connected storages into one device. The workflow should work out how to split the library across the storages, or let the user handle it.
+- Split unit: Artist (an artist is split by album only if it fits on no single storage).
+- Placement in auto mode: fill storages in the user's order.
+- Library doesn't fit: "App should calculate 'does albums fits?' befor start syncing" (fit check in the preview, before anything is copied).
+- Only some storages connected: sync what's there.

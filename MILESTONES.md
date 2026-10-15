@@ -13,20 +13,20 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | M1 | Platform dirs, config + presets, SQLite store, `config`/`preset` commands | ✅ 2026-10-13 |
 | M2 | Tags read/write, path template, `scan` / `organize` / `retag`, singles modes | ✅ 2026-10-14 |
 | M3 | Metadata providers (Discogs → MusicBrainz), cache, Needs Review | ✅ 2026-10-14 |
-| M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ⏳ next |
-| M5 | TUI v1 | ⏳ |
+| M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ✅ 2026-10-14 |
+| M5 | TUI v1 | ⏳ next |
 | **Later stages** | | |
 | S2 | Duplicate detection polished across sources | ⏳ |
 | S3 | YAML batch download list | ⏳ |
 | S4 | Artist playlists | ⏳ |
-| S5 | Device sync | ⏳ |
+| S5 | Device sync: devices made of several storages (internal + SD), automatic or manual split | ⏳ |
 | S6+ | Background sync, per-device format conversion, Last.fm/Spotify, command bar | ⏳ |
 
 ---
 
 ## Conventions (apply to every milestone)
 - Go only, module `your-music-library`, binary `ymlib` (`cmd/ymlib`). Commands are defined in `internal/cli` and get injected `platform.Dirs` so tests use temporary directories.
-- Test-first. `make check` (gofmt, go vet, staticcheck, tests) must pass before a milestone counts as done. Tests never touch the network or the real home directory.
+- Test-first. `make check` must pass before a milestone counts as done. Tests never touch the network or the real home directory.
 - File tags are the source of truth. SQLite is only an index, rebuildable with `scan`.
 - Nothing moves or gets re-tagged without a preview (`--dry-run` shows the plan, applying is explicit).
 - No browser in core. No integration with unlicensed sources (lucida.to, monochrome.st and similar). Sources are external plugins.
@@ -84,12 +84,16 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 - Commands: `ymlib identify [folder...] [--force] [--apply]`, `ymlib review`, `ymlib review apply <id> <n> [--apply]`, `ymlib review skip <id>`, `ymlib auth discogs [--remove]`, `ymlib auth status`, `ymlib --version`.
 - Tests: recorded real responses in `internal/metadata/testdata` (Discogs releases 120096 and 249504; MusicBrainz searches and the "Off the Wall" release). **The Discogs search fixture is handwritten** (search needs a token), so verify it against the real API once a token is set. A live run against MusicBrainz tagged an album and a lone single correctly; it found and fixed the single-search and review-sync bugs.
 
-## M4 — Sources and queue ⏳
-- `internal/source`: plugin protocol, JSON over stdin/stdout, with operations `search` (results: title, artist, album, length, quality, explicit, cover URL, source ID), `resolve`, and `download` (into a given temp folder). Plugins are found in a configured folder. Fake plugin binary built in tests.
-- Built-in source `localimport`: an inbox folder of audio files; identify via M3, tag with the active preset, file into the library with the template.
-- `internal/queue`: jobs saved in `queue_jobs`, `queue.parallel` workers, retry with backoff, download into a temp folder, then check (file decodes, duration matches), tag, move into the library, index. Nothing half-done ever enters the library.
-- Duplicate flags on search results: ✓ in library (source ID → ISRC/MBID → normalized albumartist+album+disc+track+title), ≈ other edition.
-- Commands: `ymlib search`, `ymlib download`, `ymlib import <dir>`, `ymlib queue`.
+## M4 — Sources and queue ✅
+- `internal/source`: plugin protocol v1 (documented in `source.go`). A plugin is any executable in `sources_dir` (default `~/.config/ymlib/sources`), named by its file name. It's started once per request as `<plugin> <command>` with JSON on stdin and JSON on stdout. Commands: `info`, `search`, `resolve`, `download`. Errors come as non-zero exit + stderr, or `{"error": ...}`. Downloads must stay inside `dest_dir` (enforced). Timeouts: 1 min for queries, 30 min for downloads. `Item` carries id, kind, title, artist, album, numbers, duration, ISRC, explicit, cover URL and quality ("FLAC 24/96"). **No real plugins ship.** The test plugin is `internal/source/testdata/fakesource`, built by `testutil.FakeSourceDir`.
+- `library.DupIndex`: tiers are source ID → ISRC/MB recording → normalized artist + title (edition noise removed). The same album (normalized exactly; grouped singles also by their original album) means `InLibrary` ✓; otherwise `OtherEdition` ≈.
+- `library.PlanIngest`/`ApplyIngest`, shared by `import` and downloads: read tags → skip duplicates (unless `Force`) → `identifyEntries` (identify core refactored to work on files outside the library) → target paths (multi-disc aware, including library tracks) → conflicts. On apply, each file is copied (moved if it's already in staging) to `<library>/.ymlib-incoming/` (`StagingDir`, hidden so scan skips it), tagged (release, covers, preset; folder images go to the *target* album folder), then renamed into place and indexed. Failures stay in staging; `Move` deletes sources only after success. Reviews point to the final paths.
+- Migration `0004_queue_v2.sql` rebuilds `queue_jobs`: unique on (source, kind, source_id), adds `parent_id` (album → tracks), `not_before`, `note` and `file`. `internal/queue`: Enqueue (re-enqueueing a failed job resets it), Claim (atomic `UPDATE … RETURNING`), Complete/Fail (retryable failures back off; `MaxAttempts` = 3), Recover (running tracks → pending after a crash), Retry, Clear (albums only together with their tracks).
+- `internal/download.Runner`: albums are resolved into track jobs (album metadata filled into tracks). Tracks queued by reference are resolved first. Duplicate check, then download into `StagingDir/job-<id>`, then `Verify` (format supported, tags parse, decodes with ffmpeg if installed, length within max(3 s, 2%) of the announced duration; without ffmpeg, FLAC length comes from STREAMINFO), then the source's metadata and IDs are written into the file. Standalone tracks are ingested right away; album tracks wait until all have finished, then the album is ingested together (one lookup). `queue.parallel` workers; ingest is serialized. Backoff is 30 s, 2 min, 8 min. Ctrl-C stops cleanly and `queue run` resumes.
+- Matching: on equal scores, titles that match the files literally win (a Discogs edition spelling "Rock With You." lost to "Rock With You"; found in a live run).
+- Config: `sources_dir`.
+- Commands: `ymlib sources`, `ymlib search [--album] [--source S] [--limit N] <query>` (✓/≈ flags), `ymlib download [--album] [--force] [--no-run] <source:id>...`, `ymlib queue [run|retry [id]|clear [--failed]]`, `ymlib import <folder> [--apply] [--move] [--force] [--no-lookup]` (refuses folders inside the library).
+- Verified live: fake plugin + real MusicBrainz (album and single), and once with real Discogs (search works against the real API).
 
 ## M5 — TUI v1 ⏳
 - Bubble Tea. Screens: Search & Download (results with cover, ✓/≈ flags), Queue, Library browser (tags, cover viewer, edit fields), Needs Review (candidates side by side), Settings/Presets. Devices & Sync screen arrives with S5.
@@ -118,10 +122,40 @@ artists:
 - Order: album date → disc → track; singles placed by their own date. Regenerated automatically when that artist's files change.
 
 ## S5 — Device sync ⏳
-- Device identified by volume UUID (via `internal/platform`). Profile: target folder, mode `mirror | update`, `include_folder_covers` (bool). No per-device metadata preset (rejected): devices get exact copies of library files.
-- Manifest `.yml-sync.json` on the device (relative path, size, mtime, hash); files are hashed only when their size or mtime changed.
-- `mirror` deletes only inside the target folder. `update` copies new and changed files, and moves renamed ones, only for files the manifest shows the app copied.
-- Runs in the TUI (progress in a corner) plus `ymlib sync`. Sync code has no UI dependency.
+Decided 2026-10-15 (answers in `ANSWERS.md`, "Sync update").
+
+**Devices and storages**
+- A **storage** is one mounted volume, identified by its volume UUID (via `internal/platform`). A **device** is a named group of one or more storages, e.g. a player with internal memory and an SD card. An external SSD is simply a device with one storage.
+- The user groups connected storages into a device and orders them (e.g. internal first, then SD).
+- Device profile (`config.yaml`): mode `mirror | update`, `include_folder_covers` (bool), `allocation: auto | manual`, and `pins`. Each storage in it has a volume UUID, a target folder and `reserve_mb`, which is free space left for the player's own database.
+- No per-device metadata preset (rejected): devices get exact copies of library files.
+
+**Manifests**
+- Each storage has its own manifest, `.yml-sync.json`, in its target folder. It records the device and storage name, plus relative path, size, mtime and hash for each file. Files are hashed only when their size or mtime changed.
+- Manifests on the device are the source of truth for what is where, so the current split is read from the storages themselves and isn't kept in SQLite.
+
+**Allocation: which storage gets what**
+- **Unit = artist**, keyed by `{albumartist}`. All of an artist's music goes to one storage, which keeps folder browsing and S4 artist playlists (relative paths) on a single storage. Only an artist too big for any one storage is split, by whole album.
+- **`auto`**: new artists go to the first storage, in the device's order, that has room after `reserve_mb`.
+- **Sticky:** music already on the device stays where it is. Nothing is reshuffled to pack space better. Moving an artist means a pin or an explicit `ymlib sync move`.
+- **Pins:** `pins: {"<Album Artist>": <storage>}` (an album can be pinned too) override `auto` placement.
+- **`manual`**: only pinned music syncs. Unpinned artists are listed as "unassigned" in the preview and the TUI.
+- A move between storages copies to the new storage, verifies the copy, then deletes the old copy. It is allowed in both modes, but only for files the manifest shows the app copied.
+
+**Fit check before copying**
+- The plan works out the whole allocation and checks free space on every storage before anything is copied. This includes the space freed by deletions and moves, minus `reserve_mb`.
+- The preview shows, per storage, what will be copied, moved and deleted, the space used before and after, and a **"doesn't fit"** list of albums and artists with their sizes.
+- Albums are never copied partially.
+
+**Partial connection**
+- When only some of a device's storages are mounted, each connected storage gets its own updates: changed and renamed files, plus deletions in `mirror` mode.
+- New music is copied only if its planned storage is connected; otherwise it waits.
+- Nothing moves between storages unless both are connected. The preview names the missing storages.
+
+**Modes and running**
+- `mirror` deletes only inside a storage's target folder. `update` copies new and changed files, and moves renamed ones, only for files the manifest shows the app copied.
+- Runs in the TUI (progress in a corner) plus `ymlib sync [device] [--apply]`, `ymlib device add|list|remove`, `ymlib sync move <artist> <storage>`. Sync code has no UI dependency.
+- In `internal/devsync` (not `sync`, which clashes with the standard library): `PlanSync` (allocation, fit, operations) → `ApplySync`. The allocation is a pure function of the library, the manifests, the free space and the profile, so it can be tested without disks.
 
 ## S6+ — Later ideas ⏳
 - Background sync toggle (launchd on macOS, systemd on Linux; runs when a device is plugged in).
@@ -132,9 +166,10 @@ artists:
 
 ## Open questions
 - M3: MusicBrainz uses typographic apostrophes (`Don’t Stop ’til`), and they are written as-is. Should titles be normalized to ASCII `'` (a config option)?
-- M3: Discogs has never been run with a real token; check search results and rate-limit headers.
 - Grouped singles: the plan said "album date = earliest single", but a file has only one Date tag and each single keeps its own. Not implemented. Decide whether it's needed (e.g. an ORIGINALDATE-style tag) or drop it.
 - Grouped singles: when single folders merge, only the first `cover.jpg` moves and the others stay in their old folders (reported as conflicts). Decide whether to keep, delete or rename them (e.g. `cover-<title>.jpg`).
 - Genre/cover exception to whole-record matching (Q20) is still not implemented: with Discogs primary, genre is almost always present; covers are missing only when a provider has none. Decide whether it's still wanted.
 - S3: standard vs. deluxe default (Q22) and "playlists only for chosen artists" (Q24) were taken as the recommended defaults because the answers repeated the questions. Confirm both.
 - M4A tag writing was postponed in M2: an ffmpeg-based writer later, or a pure-Go library if one matures.
+- S5: when the fit check finds music that doesn't fit, should `--apply` sync everything that does fit and report the rest (current assumption), or refuse until the plan fits completely?
+- S5: an artist split by album across two storages can't have one relative-path `.m3u8` playlist. Should it get one playlist per storage, or none?
