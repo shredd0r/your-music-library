@@ -27,7 +27,7 @@ func TestSearchDownloadQueue(t *testing.T) {
 	a, lib := downloadApp(t)
 
 	out, err := runApp(t, a, "sources")
-	if err != nil || !strings.Contains(out, "fake") || !strings.Contains(out, "ok") {
+	if err != nil || !strings.Contains(out, "fake") || !strings.Contains(out, "1 (per request)") || !strings.Contains(out, "ok") {
 		t.Fatalf("sources: %v\n%s", err, out)
 	}
 
@@ -95,5 +95,23 @@ func TestImportCommand(t *testing.T) {
 	}
 	if _, err := runApp(t, a, "import", lib); err == nil {
 		t.Error("importing from inside the library should be refused")
+	}
+}
+
+func TestDownloadWithRunningPlugin(t *testing.T) {
+	t.Setenv("YMLIB_FAKE_SERVE", "1")
+	state := t.TempDir()
+	t.Setenv("YMLIB_FAKE_STATE", state)
+	a, _ := downloadApp(t)
+	if out, err := runApp(t, a, "sources"); err != nil || !strings.Contains(out, "2 (stays running)") {
+		t.Fatalf("sources: %v\n%s", err, out)
+	}
+	out, err := runApp(t, a, "download", "--album", "fake:a1")
+	if err != nil || !strings.Contains(out, "imported 2") {
+		t.Fatalf("download: %v\n%s", err, out)
+	}
+	// the command closed the plugin it started
+	if closed, _ := filepath.Glob(filepath.Join(state, "closed-*")); len(closed) != 1 {
+		t.Errorf("plugin processes closed: %v; want one", closed)
 	}
 }

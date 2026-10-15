@@ -16,7 +16,7 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ✅ 2026-10-14 |
 | M5 | TUI v1 | ✅ 2026-10-15 |
 | **Later stages** | | |
-| P2 | Plugin protocol v2: plugins keep running until `close` | ⏳ planned |
+| P2 | Plugin protocol v2: plugins keep running until `close` | ✅ 2026-10-15 |
 | S2 | Duplicate detection polished across sources | ⏳ |
 | S3 | YAML batch download list | ⏳ |
 | S4 | Artist playlists | ⏳ |
@@ -95,7 +95,7 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 - Config: `sources_dir`.
 - Commands: `ymlib sources`, `ymlib search [--album] [--source S] [--limit N] <query>` (✓/≈ flags), `ymlib download [--album] [--force] [--no-run] <source:id>...`, `ymlib queue [run|retry [id]|clear [--failed]]`, `ymlib import <folder> [--apply] [--move] [--force] [--no-lookup]` (refuses folders inside the library).
 - Verified live: fake plugin + real MusicBrainz (album and single), and once with real Discogs (search works against the real API).
-- Added 2026-10-15: `examples/plugins/shelf.py`, a Python (stdlib only) example plugin that offers music from a folder the user owns (`Artist/Album/NN - Title.ext`; FLAC tags and length read from the file). `TestPythonExamplePlugin` runs it through the plugin runner (skipped without `python3`). `Discover` now follows symlinks, so a plugin can be linked into `sources_dir`.
+- Added 2026-10-15: `Discover` follows symlinks, so a plugin can be linked into `sources_dir`.
 
 ## M5 — TUI v1 ✅
 - `ymlib` with no arguments, in a terminal, opens the UI (also `ymlib tui`). Scripts and pipes get the help text. Bubble Tea v2 (`charm.land/bubbletea/v2`), bubbles textinput, lipgloss; the 16 terminal colors, so it follows the terminal theme.
@@ -110,33 +110,32 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 
 ---
 
-## P2 — Plugin protocol v2: running plugins ⏳ (planned 2026-10-15)
-Why: protocol v1 starts the plugin for every request, so it can't keep a login session, open connections, caches or rate-limit timers between calls. Writing its own state files is not the answer.
+## P2 — Plugin protocol v2: running plugins ✅
+Why: protocol 1 starts the plugin for every request, so it can't keep a login session, open connections, caches or rate-limit timers between calls. Writing its own state files is not the answer.
 
 **Lifecycle**
-- ymlib starts a plugin on its **first request** (lazily). It then stays running and answers further requests.
-- ymlib sends **`close`** when it no longer needs the plugin. The plugin finishes or cancels its work, cleans up (logs out, closes connections, removes temp files), answers, and exits.
-- `close` is sent when the TUI quits, when a CLI command finishes, and after the plugin has been idle for a while (proposed: 5 minutes). The next request starts it again.
-- If the plugin hasn't exited a few seconds after `close` (proposed: 5 s), ymlib kills it, so a stuck plugin never blocks quitting.
-- If the plugin crashes, its in-flight requests fail and the queue retries them as usual (normal backoff). The next request starts a new process.
+- Every plugin still answers `<plugin> info` as a single run. `"protocol": 2` declares a running plugin (decided: no separate `persistent` flag, and a protocol 2 plugin is always run this way). `info` is asked once per `Plugin`, on its first request, so `ymlib sources` never leaves processes behind.
+- ymlib starts `<plugin> serve` on the first request (lazily). It then stays running and answers further requests.
+- ymlib sends **`close`** and closes stdin when it no longer needs the plugin. The plugin finishes or cancels its work, cleans up (logs out, closes connections, removes temp files), may answer, and exits.
+- `close` is sent when the TUI quits (after its downloads stop), when a CLI command ends (`Registry.Close`), and after `sources.idle_minutes` (default 5; 0 = only when ymlib quits) without requests. The next request starts it again.
+- A plugin still running `sources.close_seconds` (default 5) after `close` is killed, so a stuck plugin never blocks quitting.
+- If the plugin crashes, its in-flight requests fail with its last stderr line ("plugin exited: …") and the queue retries them as usual. The next request starts a new process.
+- Config (added after P2, at the user's request): `sources: {idle_minutes, close_seconds}`, merged key by key, validated (`idle_minutes >= 0`, `close_seconds >= 1`). The CLI applies them with `Registry.SetTimeouts`; `source.IdleTimeout`/`CloseTimeout` are only the defaults for `Discover`.
 
 **Wire format**
-- One JSON message per line on stdin and stdout. Requests carry an `id` and a `command`; each answer echoes the `id`: `{"id": 7, "command": "search", "query": "...", ...}` → `{"id": 7, "results": [...]}`, errors as `{"id": 7, "error": "..."}`.
-- Ids let several requests run at once (`queue.parallel` downloads share one process); answers may come back in any order.
-- stdout carries only protocol messages; logs go to stderr.
-- Commands are the v1 set (`info`, `search`, `resolve`, `download`) plus `close`.
-
-**Compatibility**
-- A plugin opts in through `info`, e.g. `{"protocol": 2, "persistent": true}` (exact handshake to be settled). Plugins that don't keep the v1 behaviour: one process per request. v1 plugins keep working.
-- `examples/plugins/shelf.py` gets a v2 version (or mode) as the reference, and `fakesource` gains a v2 mode for tests.
+- One JSON message per line. Request: `{"id": 7, "command": "search", "params": {…protocol 1 request…}}`. Answer: `{"id": 7, "result": {…protocol 1 answer…}}` or `{"id": 7, "error": "..."}`. `params`/`result` keep the request id apart from item ids and let a plugin reuse its protocol 1 handlers.
+- Requests overlap (`queue.parallel` downloads share one process); answers may come in any order. Lines with an unknown id are ignored. stdout carries only answers; logs go to stderr (ymlib keeps its last 16 KB for error messages).
+- Commands: `search`, `resolve`, `download`, `close`.
 
 **Code**
-- `internal/source`: a process manager per plugin (lazy start, request ids, concurrent requests, idle timer, `close` with a kill deadline, restart after a crash) behind the same `Plugin` methods, so `download.Runner`, the CLI and the TUI don't change. The TUI and CLI call a `CloseAll` on exit.
-- Tests: fake plugin in v2 mode: one process serves many requests (state kept, e.g. a call counter), concurrent requests with out-of-order answers, idle close, `close` ignored → killed, crash → restart, v1 plugins unchanged.
+- `internal/source/serve.go`: the running process (lazy start, request ids, concurrent requests, idle timer, close with kill deadline, restart after a crash) behind the unchanged `Plugin` methods, so `download.Runner`, the CLI and the TUI didn't change apart from closing the registry. `ProtocolVersion` is 2; protocol 1 plugins work as before.
+- `ymlib sources` shows each plugin's protocol: "1 (per request)" or "2 (stays running)".
+- `fakesource` speaks protocol 2 with `YMLIB_FAKE_SERVE=1`, plus switches for tests (`YMLIB_FAKE_STATE`, `YMLIB_FAKE_IGNORE_CLOSE`, queries `whoami`, `slow`, `crash`).
+- Tests: one process keeps state across requests, all commands and error answers over the connection, overlapping requests answered out of order, idle close, a plugin ignoring `close` is killed, a crash restarts, protocol 1 still starts per request, `Registry.Close`, and a CLI album download in protocol 2 that uses one process and closes it. Repeated 10× under `-race`.
 
-**Possible extensions (not part of P2 unless decided)**
-- Progress messages during downloads (`{"id": 7, "progress": 0.42}`) for the Queue screen, and cancelling a request by message.
-- State that must survive app restarts (e.g. a login token): ymlib stores it for the plugin (a `plugin_state` table, secrets in the keychain) instead of the plugin writing files. Only once a plugin needs it.
+**Not included (possible later)**
+- Progress messages during downloads (`{"id": 7, "progress": 0.42}`) for the Queue screen, and cancelling a single request by message (today a cancelled request is abandoned; its late answer is ignored).
+- State that must survive app restarts (e.g. a login token): ymlib would store it for the plugin (a `plugin_state` table, secrets in the keychain). Only once a plugin needs it.
 
 ## S2 — Duplicate detection across sources ⏳
 Tune the matching tiers once real sources and Discogs data exist (Discogs rarely has ISRC/MBID, so tier 3 does more of the work).
@@ -207,7 +206,5 @@ Decided 2026-10-15 (answers in `ANSWERS.md`, "Sync update").
 - Genre/cover exception to whole-record matching (Q20) is still not implemented: with Discogs primary, genre is almost always present; covers are missing only when a provider has none. Decide whether it's still wanted.
 - S3: standard vs. deluxe default (Q22) and "playlists only for chosen artists" (Q24) were taken as the recommended defaults because the answers repeated the questions. Confirm both.
 - M4A tag writing was postponed in M2: an ffmpeg-based writer later, or a pure-Go library if one matures.
-- P2: idle timeout (proposed 5 min) and kill deadline after `close` (proposed 5 s): confirm, and whether they're configurable.
-- P2: how a plugin declares v2 (`protocol: 2` alone, or plus `persistent: true`), and whether v2 plugins may still be run once per request.
 - S5: when the fit check finds music that doesn't fit, should `--apply` sync everything that does fit and report the rest (current assumption), or refuse until the plan fits completely?
 - S5: an artist split by album across two storages can't have one relative-path `.m3u8` playlist. Should it get one playlist per storage, or none?

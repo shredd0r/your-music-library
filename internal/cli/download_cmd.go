@@ -32,12 +32,16 @@ func (a *app) sourcesDir() string {
 	return filepath.Join(filepath.Dir(a.configPath), "sources")
 }
 
+// registry finds the source plugins. Callers Close it when done, which
+// stops plugins that keep running (protocol 2).
 func (a *app) registry() (*source.Registry, error) {
 	plugins, err := source.Discover(a.sourcesDir())
 	if err != nil {
 		return nil, err
 	}
-	return source.NewRegistry(plugins), nil
+	reg := source.NewRegistry(plugins)
+	reg.SetTimeouts(time.Duration(a.cfg.Sources.IdleMinutes)*time.Minute, time.Duration(a.cfg.Sources.CloseSeconds)*time.Second)
+	return reg, nil
 }
 
 // withInterrupt cancels ctx on Ctrl-C so jobs stop cleanly and resume later.
@@ -57,20 +61,28 @@ func newDownloadCommands(a *app, loadConfig preRun) []*cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer reg.Close()
 			if len(reg.All()) == 0 {
 				fmt.Fprintf(w, "No source plugins in %s.\n", a.sourcesDir())
 				fmt.Fprintln(w, "A plugin is an executable speaking the JSON protocol described in internal/source/source.go.")
 				return nil
 			}
 			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tVERSION\tSTATUS")
+			fmt.Fprintln(tw, "NAME\tVERSION\tPROTOCOL\tSTATUS")
 			for _, p := range reg.All() {
 				info, err := p.Info(cmd.Context())
 				status := "ok"
 				if err != nil {
 					status = "error: " + err.Error()
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\n", p.Name, orDash(info.Version), status)
+				protocol := "—"
+				switch info.Protocol {
+				case 1:
+					protocol = "1 (per request)"
+				case 2:
+					protocol = "2 (stays running)"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.Name, orDash(info.Version), protocol, status)
 			}
 			return tw.Flush()
 		},
@@ -89,6 +101,7 @@ func newDownloadCommands(a *app, loadConfig preRun) []*cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer reg.Close()
 			plugins := reg.All()
 			if searchSource != "" {
 				p, err := reg.Get(searchSource)
@@ -238,6 +251,7 @@ func (a *app) runQueue(cmd *cobra.Command, lib *library.Library, db *sql.DB, for
 	if err != nil {
 		return err
 	}
+	defer reg.Close()
 	ctx, stop := withInterrupt(cmd.Context())
 	defer stop()
 	w, ew := cmd.OutOrStdout(), cmd.ErrOrStderr()

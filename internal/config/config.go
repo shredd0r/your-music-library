@@ -53,6 +53,17 @@ type CacheConfig struct {
 	MaxAgeDays int `yaml:"max_age_days"`
 }
 
+// SourcesConfig controls source plugins that keep running (protocol 2).
+type SourcesConfig struct {
+	// IdleMinutes: a running plugin without requests for this long is
+	// closed; the next request starts it again. 0 keeps it running until
+	// ymlib quits.
+	IdleMinutes int `yaml:"idle_minutes"`
+	// CloseSeconds: how long a plugin gets to exit after close before it
+	// is killed.
+	CloseSeconds int `yaml:"close_seconds"`
+}
+
 // Config is the effective configuration: defaults merged with the user file.
 type Config struct {
 	LibraryPath  string
@@ -66,6 +77,7 @@ type Config struct {
 	// SourcesDir holds source plugins (executables). Empty means
 	// "sources" next to config.yaml.
 	SourcesDir string
+	Sources    SourcesConfig
 	// Presets holds built-in and user presets; user presets with the same
 	// name replace built-ins.
 	Presets map[string]Preset
@@ -82,6 +94,7 @@ func Default() Config {
 		Queue:        QueueConfig{Parallel: 2},
 		Cache:        CacheConfig{MaxAgeDays: 180},
 		Metadata:     MetadataConfig{MinScore: 0.85},
+		Sources:      SourcesConfig{IdleMinutes: 5, CloseSeconds: 5},
 		Presets:      builtinPresets(),
 	}
 }
@@ -113,7 +126,14 @@ type fileConfig struct {
 	Cache        *CacheConfig          `yaml:"cache,omitempty"`
 	Metadata     *MetadataConfig       `yaml:"metadata,omitempty"`
 	SourcesDir   *string               `yaml:"sources_dir,omitempty"`
+	Sources      *fileSources          `yaml:"sources,omitempty"`
 	Presets      map[string]filePreset `yaml:"presets,omitempty"`
+}
+
+// fileSources merges key by key, so setting one key keeps the other's default.
+type fileSources struct {
+	IdleMinutes  *int `yaml:"idle_minutes,omitempty"`
+	CloseSeconds *int `yaml:"close_seconds,omitempty"`
 }
 
 type filePreset struct {
@@ -174,6 +194,14 @@ func Parse(data []byte) (Config, error) {
 	}
 	if fc.SourcesDir != nil {
 		c.SourcesDir = *fc.SourcesDir
+	}
+	if fc.Sources != nil {
+		if fc.Sources.IdleMinutes != nil {
+			c.Sources.IdleMinutes = *fc.Sources.IdleMinutes
+		}
+		if fc.Sources.CloseSeconds != nil {
+			c.Sources.CloseSeconds = *fc.Sources.CloseSeconds
+		}
 	}
 	for name, fp := range fc.Presets {
 		p, err := fp.toPreset(name)
@@ -238,6 +266,12 @@ func (c Config) Validate() error {
 	if c.Cache.MaxAgeDays < 1 {
 		errs = append(errs, errors.New("cache.max_age_days must be >= 1"))
 	}
+	if c.Sources.IdleMinutes < 0 {
+		errs = append(errs, errors.New("sources.idle_minutes must be >= 0 (0 = until ymlib quits)"))
+	}
+	if c.Sources.CloseSeconds < 1 {
+		errs = append(errs, errors.New("sources.close_seconds must be >= 1"))
+	}
 	return errors.Join(errs...)
 }
 
@@ -254,6 +288,7 @@ func (c Config) Marshal() ([]byte, error) {
 		Queue:        &c.Queue,
 		Cache:        &c.Cache,
 		Metadata:     &c.Metadata,
+		Sources:      &fileSources{IdleMinutes: &c.Sources.IdleMinutes, CloseSeconds: &c.Sources.CloseSeconds},
 	}
 	if c.SourcesDir != "" {
 		fc.SourcesDir = &c.SourcesDir

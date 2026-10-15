@@ -78,6 +78,8 @@ cache:
   max_age_days: 30
 providers: [musicbrainz]
 sources_dir: /plugins
+sources:
+  idle_minutes: 0
 presets:
   car:
     fields: [Title, Artist, "Track Number", "Picture Cover"]
@@ -89,6 +91,10 @@ presets:
 	}
 	if c.LibraryPath != "/music" || c.Singles != SinglesGrouped || c.Queue.Parallel != 4 || c.Cache.MaxAgeDays != 30 || c.SourcesDir != "/plugins" {
 		t.Errorf("unexpected config: %+v", c)
+	}
+	// one key of a section set: the other keeps its default
+	if c.Sources.IdleMinutes != 0 || c.Sources.CloseSeconds != 5 {
+		t.Errorf("Sources = %+v", c.Sources)
 	}
 	car, ok := c.Preset("car")
 	if !ok || len(car.Fields) != 4 || car.CoverMaxPx != 300 {
@@ -126,6 +132,9 @@ func TestValidationErrors(t *testing.T) {
 		"bad singles":     "singles: sometimes\n",
 		"bad parallel":    "queue:\n  parallel: 0\n",
 		"bad cache age":   "cache:\n  max_age_days: -1\n",
+		"bad idle":        "sources:\n  idle_minutes: -1\n",
+		"bad close":       "sources:\n  close_seconds: 0\n",
+		"unknown sources": "sources:\n  idle: 3\n",
 		"bad min score":   "metadata:\n  min_score: 1.5\n",
 		"zero min score":  "metadata:\n  min_score: 0\n",
 		"bad provider":    "providers: [discogs, napster]\n",

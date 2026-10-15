@@ -1,18 +1,30 @@
 // Command fakesource is a source plugin used only by tests. Its catalog is
 // fixed; "downloads" copy the tiny audio fixtures from $YMLIB_FAKE_AUDIO.
 //
-// Failure switches (environment):
+// Switches (environment):
 //
 //	YMLIB_FAKE_FAIL_ONCE=<dir>  first download of each id fails (marker files in dir)
 //	YMLIB_FAKE_CORRUPT=1        downloads write garbage
+//	YMLIB_FAKE_SERVE=1          speak protocol 2 (`fakesource serve`)
+//	YMLIB_FAKE_STATE=<dir>      protocol 2: write closed-<pid> to dir on close
+//	YMLIB_FAKE_IGNORE_CLOSE=1   protocol 2: ignore close and end of input
+//
+// Special search queries: "whoami" returns one item with the process id
+// as ID and the number of requests this process has served as Title;
+// "slow" answers after 300 ms; "crash" exits with status 3.
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type quality struct {
@@ -49,19 +61,100 @@ var catalog = map[string]item{
 	"long": {ID: "long", Kind: "track", Title: "Long Song", Artist: "Nobody", Album: "Long", TrackNumber: 1, DurationSec: 300, Quality: flac},
 }
 
+var served atomic.Int64
+
 func main() {
 	if len(os.Args) < 2 {
 		fail("usage: fakesource <command>")
 	}
+	if os.Args[1] == "serve" {
+		serve()
+		return
+	}
 	var req map[string]any
 	json.NewDecoder(os.Stdin).Decode(&req)
+	res, fatal := handle(os.Args[1], req)
+	if fatal != "" {
+		fail(fatal)
+	}
+	out(res)
+}
+
+// serve is protocol 2: JSON lines, each request handled concurrently.
+func serve() {
+	var mu sync.Mutex
+	enc := json.NewEncoder(os.Stdout)
+	write := func(v map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		enc.Encode(v)
+	}
+	ignoreClose := os.Getenv("YMLIB_FAKE_IGNORE_CLOSE") == "1"
+	var wg sync.WaitGroup
+	in := bufio.NewScanner(os.Stdin)
+	for in.Scan() {
+		var msg struct {
+			ID      int64          `json:"id"`
+			Command string         `json:"command"`
+			Params  map[string]any `json:"params"`
+		}
+		if json.Unmarshal(in.Bytes(), &msg) != nil {
+			continue
+		}
+		if msg.Command == "close" {
+			if ignoreClose {
+				continue
+			}
+			wg.Wait()
+			if dir := os.Getenv("YMLIB_FAKE_STATE"); dir != "" {
+				os.WriteFile(filepath.Join(dir, fmt.Sprintf("closed-%d", os.Getpid())), nil, 0o644)
+			}
+			write(map[string]any{"id": msg.ID})
+			return
+		}
+		served.Add(1)
+		wg.Go(func() {
+			res, fatal := handle(msg.Command, msg.Params)
+			if fatal != "" {
+				write(map[string]any{"id": msg.ID, "error": fatal})
+				return
+			}
+			if e, ok := res["error"]; ok {
+				write(map[string]any{"id": msg.ID, "error": e})
+				return
+			}
+			write(map[string]any{"id": msg.ID, "result": res})
+		})
+	}
+	if ignoreClose {
+		select {} // a stuck plugin: only a kill stops it
+	}
+	wg.Wait()
+}
+
+// handle answers one request. fatal is a failure reported as a non-zero
+// exit in protocol 1.
+func handle(command string, req map[string]any) (res map[string]any, fatal string) {
 	str := func(k string) string { s, _ := req[k].(string); return s }
 
-	switch os.Args[1] {
+	switch command {
 	case "info":
-		out(map[string]any{"protocol": 1, "name": "fake", "version": "1.0"})
+		protocol := 1
+		if os.Getenv("YMLIB_FAKE_SERVE") == "1" {
+			protocol = 2
+		}
+		return map[string]any{"protocol": protocol, "name": "fake", "version": "1.0"}, ""
 	case "search":
 		q, kind := strings.ToLower(str("query")), str("kind")
+		switch q {
+		case "whoami":
+			return map[string]any{"results": []item{{ID: strconv.Itoa(os.Getpid()), Kind: kind, Title: strconv.FormatInt(served.Load(), 10)}}}, ""
+		case "slow":
+			time.Sleep(300 * time.Millisecond)
+		case "crash":
+			fmt.Fprintln(os.Stderr, "fake crashed")
+			os.Exit(3)
+		}
 		results := []item{}
 		for _, id := range []string{"a1", "t1", "t2", "s1", "long"} {
 			it := catalog[id]
@@ -69,46 +162,44 @@ func main() {
 				results = append(results, it)
 			}
 		}
-		out(map[string]any{"results": results})
+		return map[string]any{"results": results}, ""
 	case "resolve":
 		it, ok := catalog[str("id")]
 		if !ok {
-			out(map[string]any{"error": "unknown id " + str("id")})
-			return
+			return map[string]any{"error": "unknown id " + str("id")}, ""
 		}
 		var tracks []item
 		for _, t := range it.tracks {
 			tracks = append(tracks, catalog[t])
 		}
-		out(map[string]any{"item": it, "tracks": tracks})
+		return map[string]any{"item": it, "tracks": tracks}, ""
 	case "download":
 		id, dest := str("id"), str("dest_dir")
 		it, ok := catalog[id]
 		if !ok || it.Kind != "track" {
-			fail("cannot download " + id)
+			return nil, "cannot download " + id
 		}
 		if dir := os.Getenv("YMLIB_FAKE_FAIL_ONCE"); dir != "" {
 			marker := filepath.Join(dir, "failed-"+id)
 			if _, err := os.Stat(marker); err != nil {
 				os.WriteFile(marker, nil, 0o644)
-				fail("temporary network error")
+				return nil, "temporary network error"
 			}
 		}
 		data, err := os.ReadFile(filepath.Join(os.Getenv("YMLIB_FAKE_AUDIO"), "tiny."+it.Quality.Format))
 		if err != nil {
-			fail(err.Error())
+			return nil, err.Error()
 		}
 		if os.Getenv("YMLIB_FAKE_CORRUPT") == "1" {
 			data = []byte("this is not audio")
 		}
 		name := id + "." + it.Quality.Format
 		if err := os.WriteFile(filepath.Join(dest, name), data, 0o644); err != nil {
-			fail(err.Error())
+			return nil, err.Error()
 		}
-		out(map[string]any{"file": name})
-	default:
-		fail("unknown command " + os.Args[1])
+		return map[string]any{"file": name}, ""
 	}
+	return nil, "unknown command " + command
 }
 
 func out(v any) { json.NewEncoder(os.Stdout).Encode(v) }

@@ -78,7 +78,7 @@ func TestDiscoverSkipsNonExecutables(t *testing.T) {
 func TestDownloadMustStayInDestDir(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "evil")
-	os.WriteFile(script, []byte("#!/bin/sh\necho '{\"file\": \"../../etc/passwd\"}'\n"), 0o755)
+	os.WriteFile(script, []byte("#!/bin/sh\nif [ \"$1\" = info ]; then echo '{\"protocol\": 1}'; exit; fi\necho '{\"file\": \"../../etc/passwd\"}'\n"), 0o755)
 	p := &Plugin{Name: "evil", Path: script}
 	if _, err := p.Download(context.Background(), "x", t.TempDir()); err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Errorf("escape not rejected: %v", err)

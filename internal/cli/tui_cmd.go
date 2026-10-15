@@ -68,6 +68,7 @@ func (a *app) runTUI(cmd *cobra.Command) (err error) {
 	if err != nil {
 		return err
 	}
+	defer reg.Close() // after the UI has stopped its downloads
 	ctx := cmd.Context()
 	d := tui.Deps{
 		Lib: lib, Queue: queue.New(db), Sources: reg,

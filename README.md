@@ -138,7 +138,7 @@ How a download proceeds:
 4. Temporary failures are retried up to 3 times (after 30 s, 2 min, 8 min).
 5. When all tracks of an album are in, the album is identified once, tagged with the active preset and filed by `path_template`. Nothing half-finished ever appears in the library.
 
-**Source plugins.** ymlib doesn't include any download source. A source is a separate program you put in `sources_dir` (default `~/.config/ymlib/sources/`), named after its file. ymlib runs it once per request, as `<plugin> info|search|resolve|download`, with a JSON request on stdin and a JSON answer on stdout. The protocol is documented in [`internal/source/source.go`](internal/source/source.go), [`examples/plugins/shelf.py`](examples/plugins/shelf.py) is a working Python example (standard library only) that offers music from a folder you own, such as a NAS share or Bandcamp purchases. Symlink or copy it into the sources folder, make it executable, and set its root in `.shelf.json` next to it (`{"root": "~/Music/Shelf"}`) or in `YMLIB_SHELF_ROOT`. The Go test plugin [`internal/source/testdata/fakesource`](internal/source/testdata/fakesource/main.go) is another example. Plugin authors are responsible for using services in line with their terms.
+**Source plugins.** ymlib doesn't include any download source. A source is a separate program you put in `sources_dir` (default `~/.config/ymlib/sources/`), named after its file. A protocol 1 plugin is run once per request, as `<plugin> info|search|resolve|download`, with a JSON request on stdin and a JSON answer on stdout. A protocol 2 plugin (it says `"protocol": 2` in `info`) keeps state between requests: ymlib starts `<plugin> serve` on first use, exchanges one JSON message per line with it, and sends `close` when it quits, when a command ends, or after `sources.idle_minutes` without requests. The protocol is documented in [`internal/source/source.go`](internal/source/source.go), and the test plugin [`internal/source/testdata/fakesource`](internal/source/testdata/fakesource/main.go) is a complete example of both protocols. A plugin can also be a symlink into the sources folder. Plugin authors are responsible for using services in line with their terms.
 
 ### `config`, `preset`, `auth`
 ```sh
@@ -168,6 +168,9 @@ cache:
 queue:
   parallel: 2                      # simultaneous downloads
 sources_dir: ""                    # source plugins; default ~/.config/ymlib/sources
+sources:                           # plugins that keep running (protocol 2)
+  idle_minutes: 5                  # close a plugin after this long without requests; 0 = when ymlib quits
+  close_seconds: 5                 # kill a plugin that hasn't exited this long after close
 presets:
   car:                             # your own presets
     fields: [Title, Artist, Album, Track Number, Picture Cover]
