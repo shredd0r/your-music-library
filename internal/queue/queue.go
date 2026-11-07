@@ -41,9 +41,12 @@ type Job struct {
 	LastError string
 	Note      string
 	File      string // downloaded/imported file, relative to the library
-	Item      source.Item
-	Created   time.Time
-	Updated   time.Time
+	// WaitingSince is when the job started waiting for its offline or
+	// disabled plugin; zero if it isn't waiting.
+	WaitingSince time.Time
+	Item         source.Item
+	Created      time.Time
+	Updated      time.Time
 }
 
 // Ref is the job's "<source>:<id>".
@@ -59,19 +62,25 @@ type Queue struct {
 func New(db *sql.DB) *Queue { return &Queue{db: db, now: time.Now} }
 
 const columns = `id, source, source_id, kind, coalesce(parent_id, 0), status, attempts, not_before,
-	last_error, note, file, payload, created_at, updated_at`
+	last_error, note, file, waiting_since, payload, created_at, updated_at`
+
+// asleep is not_before for waiting jobs: they run again only after Wake.
+const asleep = int64(1) << 62
 
 type scanner interface{ Scan(...any) error }
 
 func scanJob(s scanner) (Job, error) {
 	var j Job
 	var payload string
-	var notBefore, created, updated int64
+	var notBefore, waiting, created, updated int64
 	if err := s.Scan(&j.ID, &j.Source, &j.SourceID, &j.Kind, &j.ParentID, &j.Status, &j.Attempts, &notBefore,
-		&j.LastError, &j.Note, &j.File, &payload, &created, &updated); err != nil {
+		&j.LastError, &j.Note, &j.File, &waiting, &payload, &created, &updated); err != nil {
 		return Job{}, err
 	}
 	j.NotBefore, j.Created, j.Updated = time.Unix(notBefore, 0), time.Unix(created, 0), time.Unix(updated, 0)
+	if waiting > 0 {
+		j.WaitingSince = time.Unix(waiting, 0)
+	}
 	if err := json.Unmarshal([]byte(payload), &j.Item); err != nil {
 		return Job{}, err
 	}
@@ -100,7 +109,7 @@ func (q *Queue) Enqueue(ctx context.Context, src string, kind source.Kind, item 
 	created, _ := res.RowsAffected()
 	if created == 0 {
 		if _, err := q.db.ExecContext(ctx, `UPDATE queue_jobs SET status = 'pending', attempts = 0, not_before = 0,
-			last_error = '', parent_id = coalesce(?, parent_id), updated_at = ?
+			waiting_since = 0, last_error = '', parent_id = coalesce(?, parent_id), updated_at = ?
 			WHERE source = ? AND kind = ? AND source_id = ? AND status = 'failed'`,
 			parentArg, now, src, kind, item.ID); err != nil {
 			return Job{}, false, err
@@ -129,7 +138,7 @@ func (q *Queue) Get(ctx context.Context, id int64) (Job, error) {
 
 // Complete marks a job done with a note and file.
 func (q *Queue) Complete(ctx context.Context, id int64, note, file string) error {
-	_, err := q.db.ExecContext(ctx, `UPDATE queue_jobs SET status = 'done', note = ?, file = ?, last_error = '', updated_at = ? WHERE id = ?`,
+	_, err := q.db.ExecContext(ctx, `UPDATE queue_jobs SET status = 'done', note = ?, file = ?, last_error = '', waiting_since = 0, updated_at = ? WHERE id = ?`,
 		note, file, q.now().Unix(), id)
 	return err
 }
@@ -162,9 +171,39 @@ func (q *Queue) Fail(ctx context.Context, id int64, cause error, retryable bool,
 	if retryable && attempts < MaxAttempts {
 		status, notBefore = Pending, q.now().Add(backoff).Unix()
 	}
-	_, err = q.db.ExecContext(ctx, `UPDATE queue_jobs SET status = ?, attempts = ?, not_before = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+	_, err = q.db.ExecContext(ctx, `UPDATE queue_jobs SET status = ?, attempts = ?, not_before = ?, last_error = ?, waiting_since = 0, updated_at = ? WHERE id = ?`,
 		status, attempts, notBefore, cause.Error(), q.now().Unix(), id)
 	return status, err
+}
+
+// Wait puts a job back as pending because its plugin is offline or
+// disabled, without counting an attempt. The job sleeps until Wake (the
+// next run). It returns when the job started waiting.
+func (q *Queue) Wait(ctx context.Context, id int64, reason string) (time.Time, error) {
+	now := q.now().Unix()
+	var since int64
+	err := q.db.QueryRowContext(ctx, `UPDATE queue_jobs SET status = 'pending', not_before = ?, last_error = ?,
+		waiting_since = CASE WHEN waiting_since = 0 THEN ? ELSE waiting_since END, updated_at = ?
+		WHERE id = ? RETURNING waiting_since`, asleep, reason, now, now, id).Scan(&since)
+	return time.Unix(since, 0), err
+}
+
+// Wake makes waiting jobs ready to try once more. It returns how many
+// jobs were waiting.
+func (q *Queue) Wake(ctx context.Context) (int, error) {
+	res, err := q.db.ExecContext(ctx, "UPDATE queue_jobs SET not_before = 0 WHERE status = 'pending' AND waiting_since > 0")
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// Waiting counts jobs waiting for an offline or disabled plugin.
+func (q *Queue) Waiting(ctx context.Context) (int, error) {
+	var n int
+	err := q.db.QueryRowContext(ctx, "SELECT count(*) FROM queue_jobs WHERE status = 'pending' AND waiting_since > 0").Scan(&n)
+	return n, err
 }
 
 // List returns jobs: albums first with their tracks after them, then
@@ -212,9 +251,10 @@ func (q *Queue) Recover(ctx context.Context) (int, error) {
 }
 
 // NextWake returns when the earliest delayed pending job becomes ready.
+// Jobs waiting for their plugin don't count: they wait for the next run.
 func (q *Queue) NextWake(ctx context.Context) (time.Time, bool, error) {
 	var t sql.NullInt64
-	err := q.db.QueryRowContext(ctx, "SELECT min(not_before) FROM queue_jobs WHERE status = 'pending'").Scan(&t)
+	err := q.db.QueryRowContext(ctx, "SELECT min(not_before) FROM queue_jobs WHERE status = 'pending' AND waiting_since = 0").Scan(&t)
 	if err != nil || !t.Valid {
 		return time.Time{}, false, err
 	}
@@ -223,7 +263,7 @@ func (q *Queue) NextWake(ctx context.Context) (time.Time, bool, error) {
 
 // Retry resets failed jobs (one id, or all when id is 0) to pending.
 func (q *Queue) Retry(ctx context.Context, id int64) (int, error) {
-	query := "UPDATE queue_jobs SET status = 'pending', attempts = 0, not_before = 0, last_error = '', updated_at = ? WHERE status = 'failed'"
+	query := "UPDATE queue_jobs SET status = 'pending', attempts = 0, not_before = 0, waiting_since = 0, last_error = '', updated_at = ? WHERE status = 'failed'"
 	args := []any{q.now().Unix()}
 	if id > 0 {
 		query += " AND (id = ? OR parent_id = ?)"

@@ -152,11 +152,16 @@ func (m *queueScreen) row(i int) string {
 	if j.File != "" && j.Note != "downloaded" {
 		result = strings.TrimSpace(j.Note + ": " + j.File)
 	}
-	if j.LastError != "" {
+	icon := jobIcon(j.Status)
+	switch {
+	case j.Status == queue.Pending && !j.WaitingSince.IsZero():
+		icon = stWarn.Render("…")
+		result = stWarn.Render(fmt.Sprintf("waiting since %s: %s", j.WaitingSince.Format("15:04"), j.LastError))
+	case j.LastError != "":
 		result = stErr.Render(fmt.Sprintf("attempt %d: %s", j.Attempts, j.LastError))
 	}
 	if result != "" {
 		result = "  " + stDim.Render("→ ") + result
 	}
-	return fmt.Sprintf("%s%s %4d %s%s%s", indent, jobIcon(j.Status), j.ID, kind, name, result)
+	return fmt.Sprintf("%s%s %4d %s%s%s", indent, icon, j.ID, kind, name, result)
 }

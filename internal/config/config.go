@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"net/url"
 	"os"
 	"slices"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -53,15 +56,33 @@ type CacheConfig struct {
 	MaxAgeDays int `yaml:"max_age_days"`
 }
 
-// SourcesConfig controls source plugins that keep running (protocol 2).
-type SourcesConfig struct {
-	// IdleMinutes: a running plugin without requests for this long is
-	// closed; the next request starts it again. 0 keeps it running until
-	// ymlib quits.
-	IdleMinutes int `yaml:"idle_minutes"`
-	// CloseSeconds: how long a plugin gets to exit after close before it
-	// is killed.
-	CloseSeconds int `yaml:"close_seconds"`
+// PluginsConfig lists the source plugins: HTTP servers the user runs.
+type PluginsConfig struct {
+	// OfflineWaitMinutes: queued downloads of an offline or disabled
+	// plugin wait this long, then fail.
+	OfflineWaitMinutes int `yaml:"offline_wait_minutes"`
+	// Registered maps a plugin name (used in references, name:id) to its
+	// server.
+	Registered map[string]PluginEntry `yaml:"registered,omitempty"`
+}
+
+// PluginEntry is one registered plugin.
+type PluginEntry struct {
+	URL     string `yaml:"url"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+// ValidatePlugin checks a plugin name and URL. Names are used in
+// references (name:id), so they can't contain ':' or spaces.
+func ValidatePlugin(name, rawURL string) error {
+	if name == "" || strings.ContainsAny(name, ": \t/") {
+		return fmt.Errorf("plugin name %q must be non-empty without ':', '/' or spaces", name)
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("plugin %s: url %q must be http(s)://host:port", name, rawURL)
+	}
+	return nil
 }
 
 // Config is the effective configuration: defaults merged with the user file.
@@ -74,10 +95,7 @@ type Config struct {
 	Queue        QueueConfig
 	Cache        CacheConfig
 	Metadata     MetadataConfig
-	// SourcesDir holds source plugins (executables). Empty means
-	// "sources" next to config.yaml.
-	SourcesDir string
-	Sources    SourcesConfig
+	Plugins      PluginsConfig
 	// Presets holds built-in and user presets; user presets with the same
 	// name replace built-ins.
 	Presets map[string]Preset
@@ -94,7 +112,7 @@ func Default() Config {
 		Queue:        QueueConfig{Parallel: 2},
 		Cache:        CacheConfig{MaxAgeDays: 180},
 		Metadata:     MetadataConfig{MinScore: 0.85},
-		Sources:      SourcesConfig{IdleMinutes: 5, CloseSeconds: 5},
+		Plugins:      PluginsConfig{OfflineWaitMinutes: 60},
 		Presets:      builtinPresets(),
 	}
 }
@@ -125,15 +143,14 @@ type fileConfig struct {
 	Queue        *QueueConfig          `yaml:"queue,omitempty"`
 	Cache        *CacheConfig          `yaml:"cache,omitempty"`
 	Metadata     *MetadataConfig       `yaml:"metadata,omitempty"`
-	SourcesDir   *string               `yaml:"sources_dir,omitempty"`
-	Sources      *fileSources          `yaml:"sources,omitempty"`
+	Plugins      *filePlugins          `yaml:"plugins,omitempty"`
 	Presets      map[string]filePreset `yaml:"presets,omitempty"`
 }
 
-// fileSources merges key by key, so setting one key keeps the other's default.
-type fileSources struct {
-	IdleMinutes  *int `yaml:"idle_minutes,omitempty"`
-	CloseSeconds *int `yaml:"close_seconds,omitempty"`
+// filePlugins merges key by key, so setting one key keeps the other's default.
+type filePlugins struct {
+	OfflineWaitMinutes *int                   `yaml:"offline_wait_minutes,omitempty"`
+	Registered         map[string]PluginEntry `yaml:"registered,omitempty"`
 }
 
 type filePreset struct {
@@ -158,8 +175,27 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
+// removedKeys were settings of earlier versions; they get a hint instead
+// of the plain "unknown field" error.
+var removedKeys = map[string]string{
+	"sources_dir": "sources_dir was removed: plugins are now servers you run; register them with `ymlib plugin add <name> <url>`",
+	"sources":     "the sources section was removed: plugins are now servers you run; register them with `ymlib plugin add <name> <url>`",
+}
+
 // Parse merges YAML data over Default and validates the result.
 func Parse(data []byte) (Config, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return Config{}, err
+	}
+	if len(doc.Content) > 0 && doc.Content[0].Kind == yaml.MappingNode {
+		m := doc.Content[0]
+		for i := 0; i+1 < len(m.Content); i += 2 {
+			if hint, ok := removedKeys[m.Content[i].Value]; ok {
+				return Config{}, fmt.Errorf("line %d: %s", m.Content[i].Line, hint)
+			}
+		}
+	}
 	var fc fileConfig
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -192,16 +228,11 @@ func Parse(data []byte) (Config, error) {
 	if fc.Metadata != nil {
 		c.Metadata = *fc.Metadata
 	}
-	if fc.SourcesDir != nil {
-		c.SourcesDir = *fc.SourcesDir
-	}
-	if fc.Sources != nil {
-		if fc.Sources.IdleMinutes != nil {
-			c.Sources.IdleMinutes = *fc.Sources.IdleMinutes
+	if fc.Plugins != nil {
+		if fc.Plugins.OfflineWaitMinutes != nil {
+			c.Plugins.OfflineWaitMinutes = *fc.Plugins.OfflineWaitMinutes
 		}
-		if fc.Sources.CloseSeconds != nil {
-			c.Sources.CloseSeconds = *fc.Sources.CloseSeconds
-		}
+		c.Plugins.Registered = fc.Plugins.Registered
 	}
 	for name, fp := range fc.Presets {
 		p, err := fp.toPreset(name)
@@ -266,11 +297,13 @@ func (c Config) Validate() error {
 	if c.Cache.MaxAgeDays < 1 {
 		errs = append(errs, errors.New("cache.max_age_days must be >= 1"))
 	}
-	if c.Sources.IdleMinutes < 0 {
-		errs = append(errs, errors.New("sources.idle_minutes must be >= 0 (0 = until ymlib quits)"))
+	if c.Plugins.OfflineWaitMinutes < 1 {
+		errs = append(errs, errors.New("plugins.offline_wait_minutes must be >= 1"))
 	}
-	if c.Sources.CloseSeconds < 1 {
-		errs = append(errs, errors.New("sources.close_seconds must be >= 1"))
+	for _, name := range slices.Sorted(maps.Keys(c.Plugins.Registered)) {
+		if err := ValidatePlugin(name, c.Plugins.Registered[name].URL); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -288,10 +321,7 @@ func (c Config) Marshal() ([]byte, error) {
 		Queue:        &c.Queue,
 		Cache:        &c.Cache,
 		Metadata:     &c.Metadata,
-		Sources:      &fileSources{IdleMinutes: &c.Sources.IdleMinutes, CloseSeconds: &c.Sources.CloseSeconds},
-	}
-	if c.SourcesDir != "" {
-		fc.SourcesDir = &c.SourcesDir
+		Plugins:      &filePlugins{OfflineWaitMinutes: &c.Plugins.OfflineWaitMinutes, Registered: c.Plugins.Registered},
 	}
 	for name, p := range c.Presets {
 		if p.Builtin {

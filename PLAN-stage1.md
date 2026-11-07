@@ -5,6 +5,8 @@
 
 Out of scope: no lucida.to / monochrome.st (or similar unlicensed) source integration is built. Sources are external plugins; the built-in source is a local import inbox.
 
+> **Updated 2026-11-06 (milestone P3):** plugins are no longer executables ymlib starts. A plugin is an HTTP server the user runs; ymlib registers its URL and is a client (`docs/plugin-protocol.md`). Lines below that describe the stdin/stdout protocol are kept as the Stage 1 history.
+
 ## Settled decisions
 - **Language:** Go only. Binary `ymlib`. Test-first (TDD). No browser in core.
 - **Truth:** file tags are canonical; SQLite (`modernc.org/sqlite`, no C dependency) is an index and can be rebuilt by `scan`.
@@ -17,12 +19,12 @@ Out of scope: no lucida.to / monochrome.st (or similar unlicensed) source integr
 - **Metadata providers:** whole-record fallback chain. Discogs is primary, MusicBrainz is used when Discogs finds nothing or errors. Last.fm/Spotify later, same interface. Low-confidence matches go to a **Needs Review** list; confident ones are applied automatically.
 - **Duplicates:** source track ID → ISRC/MBID → normalized (albumartist, album, disc, track, title). Flags: ✓ in library, ≈ other edition.
 - **Queue:** saved in SQLite, 2 parallel downloads (configurable), retry with backoff, checked in a temp folder (file decodes, duration matches) before being tagged and moved into the library.
-- **Source plugins:** external executables speaking JSON over stdin/stdout (`search`, `resolve`, `download`). Built-in: local import inbox.
+- **Source plugins:** external executables speaking JSON over stdin/stdout (`search`, `resolve`, `download`). Built-in: local import inbox. *Replaced in P3 by HTTP servers the user runs (`/health`, `/search`, `/resolve`, `/download` streaming the file).*
 - **Cache:** in-memory while the app runs. Flushed to SQLite on exit, and also periodically so a crash doesn't lose everything. Loaded on start. Entries older than a configurable max age (default 6 months) are purged on startup. Cover images cached as files in `~/.cache/ymlib/`.
 - **Credentials:** OS keychain (`zalando/go-keyring`), with an environment variable as an alternative.
 - **Platform:** macOS + Linux behind `internal/platform` (config/cache dirs, volume detection), so Windows can be added later.
 - **Existing music:** `scan` (index only, nothing moves) is separate from `organize` (retag and move, preview first).
-- **TUI:** Bubble Tea. v1 screens: Search & Download, Queue, Library browser (tags and cover), Needs Review, Devices & Sync, Settings/Presets. Covers drawn with the Kitty/iTerm2 image protocol, half-block fallback (Apple Terminal).
+- **TUI:** Bubble Tea. v1 screens: Search & Download, Queue, Library browser (tags and cover), Needs Review, Devices & Sync, Settings/Presets. Covers drawn with the Kitty graphics protocol (Unicode placeholders; Kitty, Ghostty), half-block fallback everywhere else. iTerm2 also uses half-blocks, because its image protocol can't be laid out as cells (decided in M5).
 
 ## Package layout
 ```
@@ -34,10 +36,10 @@ internal/tags         TagReader/TagWriter interfaces; flac + mp3 implementations
 internal/pathtmpl     template rendering + FAT32 name cleaning
 internal/library      scan, organize, retag (preview → apply), dedupe matching, singles modes
 internal/metadata     Provider interface, discogs, musicbrainz, chain, confidence scoring
-internal/source       plugin JSON protocol, exec runner, localimport source
+internal/source       plugin client (P3: HTTP; Stage 1: JSON over stdin/stdout, exec runner); import is library.PlanIngest
 internal/queue        persistent job queue, workers, temp folder + checks
 internal/platform     OS abstraction (dirs, volumes)
-internal/tui          Bubble Tea app, screens, image renderer (kitty/iterm/halfblock)
+internal/tui          Bubble Tea app, screens; covers via internal/termimg (kitty/halfblock)
 ```
 
 ## Milestones
@@ -52,7 +54,7 @@ internal/tui          Bubble Tea app, screens, image renderer (kitty/iterm/halfb
 2. Duplicate flags polished across sources. 3. YAML batch list (`prefer_remasters` global and per artist; ranking: match → explicit → remaster pref → quality → standard over deluxe; per-entry report). 4. Artist playlists (`Playlists/Its <Artist>.m3u8`, relative paths, order album date → disc → track, auto-regenerated, chosen artists only). 5. Device sync: a device is a group of storages (volume UUIDs, e.g. internal + SD). Each storage has a target folder, `reserve_mb` and a manifest `.yml-sync.json`. Mode `mirror|update` is limited to the target folder and to files the app copied. Also `include_folder_covers`. Allocation `auto` (artist unit, fill storages in order, sticky placement) or `manual`, with pins. Fit check before copying. A partly connected device syncs what's there. Runs in the TUI plus `ymlib sync`. Details in MILESTONES.md S5. Then: background sync toggle (launchd/systemd), format conversion per device, Last.fm/Spotify providers, Claude-Code-style command bar.
 
 ## Verification
-- `go test ./...`: unit tests for template/cleaning, preset filtering, dedupe tiers, singles renumbering, cache purge; recorded HTTP fixtures for Discogs/MusicBrainz (no network); a fake source plugin binary built in tests; small generated FLAC/MP3 sample files with tags read back after writing.
+- `go test ./...`: unit tests for template/cleaning, preset filtering, dedupe tiers, singles renumbering, cache purge; recorded HTTP fixtures for Discogs/MusicBrainz (no network); a fake source plugin (since P3 an in-process HTTP server, `internal/source/sourcetest`); small generated FLAC/MP3 sample files with tags read back after writing.
 - Manual: `ymlib scan` on a sample folder → `ymlib organize --dry-run` shows the expected paths → apply → check tags with `ffprobe`/`metaflac`. `ymlib import` of untagged files → Needs Review entries for unclear ones. TUI run in Ghostty and Apple Terminal to check both cover renderers.
 
 ## Milestone 0 results (2026-10-13)

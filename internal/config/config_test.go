@@ -77,9 +77,9 @@ queue:
 cache:
   max_age_days: 30
 providers: [musicbrainz]
-sources_dir: /plugins
-sources:
-  idle_minutes: 0
+plugins:
+  registered:
+    shelf: {url: "http://127.0.0.1:8765", enabled: true}
 presets:
   car:
     fields: [Title, Artist, "Track Number", "Picture Cover"]
@@ -89,12 +89,12 @@ presets:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.LibraryPath != "/music" || c.Singles != SinglesGrouped || c.Queue.Parallel != 4 || c.Cache.MaxAgeDays != 30 || c.SourcesDir != "/plugins" {
+	if c.LibraryPath != "/music" || c.Singles != SinglesGrouped || c.Queue.Parallel != 4 || c.Cache.MaxAgeDays != 30 {
 		t.Errorf("unexpected config: %+v", c)
 	}
 	// one key of a section set: the other keeps its default
-	if c.Sources.IdleMinutes != 0 || c.Sources.CloseSeconds != 5 {
-		t.Errorf("Sources = %+v", c.Sources)
+	if c.Plugins.OfflineWaitMinutes != 60 || c.Plugins.Registered["shelf"] != (PluginEntry{URL: "http://127.0.0.1:8765", Enabled: true}) {
+		t.Errorf("Plugins = %+v", c.Plugins)
 	}
 	car, ok := c.Preset("car")
 	if !ok || len(car.Fields) != 4 || car.CoverMaxPx != 300 {
@@ -126,24 +126,26 @@ presets:
 
 func TestValidationErrors(t *testing.T) {
 	cases := map[string]string{
-		"unknown field":   "presets:\n  x:\n    fields: [Title, Mood]\n",
-		"empty preset":    "presets:\n  x:\n    fields: []\n",
-		"unknown active":  "active_preset: nope\n",
-		"bad singles":     "singles: sometimes\n",
-		"bad parallel":    "queue:\n  parallel: 0\n",
-		"bad cache age":   "cache:\n  max_age_days: -1\n",
-		"bad idle":        "sources:\n  idle_minutes: -1\n",
-		"bad close":       "sources:\n  close_seconds: 0\n",
-		"unknown sources": "sources:\n  idle: 3\n",
-		"bad min score":   "metadata:\n  min_score: 1.5\n",
-		"zero min score":  "metadata:\n  min_score: 0\n",
-		"bad provider":    "providers: [discogs, napster]\n",
-		"no providers":    "providers: []\n",
-		"negative cover":  "presets:\n  x:\n    fields: [Title]\n    cover_max_px: -5\n",
-		"empty template":  "path_template: \"\"\n",
-		"bad template":    "path_template: \"{album}/{nope}.{ext}\"\n",
-		"unknown key":     "libary_path: /typo\n",
-		"duplicate field": "presets:\n  x:\n    fields: [Title, Title]\n",
+		"unknown field":    "presets:\n  x:\n    fields: [Title, Mood]\n",
+		"empty preset":     "presets:\n  x:\n    fields: []\n",
+		"unknown active":   "active_preset: nope\n",
+		"bad singles":      "singles: sometimes\n",
+		"bad parallel":     "queue:\n  parallel: 0\n",
+		"bad cache age":    "cache:\n  max_age_days: -1\n",
+		"bad offline wait": "plugins:\n  offline_wait_minutes: 0\n",
+		"plugin url":       "plugins:\n  registered:\n    x: {url: \"ftp://h\"}\n",
+		"plugin no host":   "plugins:\n  registered:\n    x: {url: \"http://\"}\n",
+		"plugin name":      "plugins:\n  registered:\n    \"a:b\": {url: \"http://h:1\"}\n",
+		"plugin key":       "plugins:\n  registered:\n    x: {url: \"http://h:1\", port: 3}\n",
+		"bad min score":    "metadata:\n  min_score: 1.5\n",
+		"zero min score":   "metadata:\n  min_score: 0\n",
+		"bad provider":     "providers: [discogs, napster]\n",
+		"no providers":     "providers: []\n",
+		"negative cover":   "presets:\n  x:\n    fields: [Title]\n    cover_max_px: -5\n",
+		"empty template":   "path_template: \"\"\n",
+		"bad template":     "path_template: \"{album}/{nope}.{ext}\"\n",
+		"unknown key":      "libary_path: /typo\n",
+		"duplicate field":  "presets:\n  x:\n    fields: [Title, Title]\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -176,5 +178,14 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 	if c2.LibraryPath != "/music" || c2.ActivePreset != c.ActivePreset {
 		t.Errorf("round trip lost data: %+v", c2)
+	}
+}
+
+func TestRemovedKeysHint(t *testing.T) {
+	for _, data := range []string{"sources_dir: /x\n", "library_path: /m\nsources:\n  idle_minutes: 3\n"} {
+		_, err := Parse([]byte(data))
+		if err == nil || !strings.Contains(err.Error(), "ymlib plugin add") {
+			t.Errorf("%q: %v", data, err)
+		}
 	}
 }

@@ -16,7 +16,8 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | M4 | Source plugins, local import inbox, persistent download queue, duplicate flags | ✅ 2026-10-14 |
 | M5 | TUI v1 | ✅ 2026-10-15 |
 | **Later stages** | | |
-| P2 | Plugin protocol v2: plugins keep running until `close` | ✅ 2026-10-15 |
+| P2 | Plugin protocol v2: plugins keep running until `close` | superseded by P3 |
+| P3 | HTTP plugins: servers the user runs, ymlib is a client | ✅ 2026-11-06 |
 | S2 | Duplicate detection polished across sources | ⏳ |
 | S3 | YAML batch download list | ⏳ |
 | S4 | Artist playlists | ⏳ |
@@ -30,7 +31,7 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 - Test-first. `make check` must pass before a milestone counts as done. Tests never touch the network or the real home directory.
 - File tags are the source of truth. SQLite is only an index, rebuildable with `scan`.
 - Nothing moves or gets re-tagged without a preview (`--dry-run` shows the plan, applying is explicit).
-- No browser in core. No integration with unlicensed sources (lucida.to, monochrome.st and similar). Sources are external plugins.
+- No browser in core. No integration with unlicensed sources (lucida.to, monochrome.st and similar). Sources are plugins: HTTP servers the user runs (P3, `docs/plugin-protocol.md`); ymlib ships none.
 - `spikes/` are separate throwaway Go modules, not part of the app.
 - Schema changes are new numbered files `internal/store/migrations/NNNN_name.sql`. Never edit an applied migration.
 
@@ -86,7 +87,7 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 - Tests: recorded real responses in `internal/metadata/testdata` (Discogs releases 120096 and 249504; MusicBrainz searches and the "Off the Wall" release). **The Discogs search fixture is handwritten** (search needs a token), so verify it against the real API once a token is set. A live run against MusicBrainz tagged an album and a lone single correctly; it found and fixed the single-search and review-sync bugs.
 
 ## M4 — Sources and queue ✅
-- `internal/source`: plugin protocol v1 (documented in `source.go`). A plugin is any executable in `sources_dir` (default `~/.config/ymlib/sources`), named by its file name. It's started once per request as `<plugin> <command>` with JSON on stdin and JSON on stdout. Commands: `info`, `search`, `resolve`, `download`. Errors come as non-zero exit + stderr, or `{"error": ...}`. Downloads must stay inside `dest_dir` (enforced). Timeouts: 1 min for queries, 30 min for downloads. `Item` carries id, kind, title, artist, album, numbers, duration, ISRC, explicit, cover URL and quality ("FLAC 24/96"). **No real plugins ship.** The test plugin is `internal/source/testdata/fakesource`, built by `testutil.FakeSourceDir`.
+- (Plugin protocol replaced by P3; this describes M4 as built.) `internal/source`: plugin protocol v1 (documented in `source.go`). A plugin is any executable in `sources_dir` (default `~/.config/ymlib/sources`), named by its file name. It's started once per request as `<plugin> <command>` with JSON on stdin and JSON on stdout. Commands: `info`, `search`, `resolve`, `download`. Errors come as non-zero exit + stderr, or `{"error": ...}`. Downloads must stay inside `dest_dir` (enforced). Timeouts: 1 min for queries, 30 min for downloads. `Item` carries id, kind, title, artist, album, numbers, duration, ISRC, explicit, cover URL and quality ("FLAC 24/96"). **No real plugins ship.** The test plugin is `internal/source/testdata/fakesource`, built by `testutil.FakeSourceDir`.
 - `library.DupIndex`: tiers are source ID → ISRC/MB recording → normalized artist + title (edition noise removed). The same album (normalized exactly; grouped singles also by their original album) means `InLibrary` ✓; otherwise `OtherEdition` ≈.
 - `library.PlanIngest`/`ApplyIngest`, shared by `import` and downloads: read tags → skip duplicates (unless `Force`) → `identifyEntries` (identify core refactored to work on files outside the library) → target paths (multi-disc aware, including library tracks) → conflicts. On apply, each file is copied (moved if it's already in staging) to `<library>/.ymlib-incoming/` (`StagingDir`, hidden so scan skips it), tagged (release, covers, preset; folder images go to the *target* album folder), then renamed into place and indexed. Failures stay in staging; `Move` deletes sources only after success. Reviews point to the final paths.
 - Migration `0004_queue_v2.sql` rebuilds `queue_jobs`: unique on (source, kind, source_id), adds `parent_id` (album → tracks), `not_before`, `note` and `file`. `internal/queue`: Enqueue (re-enqueueing a failed job resets it), Claim (atomic `UPDATE … RETURNING`), Complete/Fail (retryable failures back off; `MaxAttempts` = 3), Recover (running tracks → pending after a crash), Retry, Clear (albums only together with their tracks).
@@ -95,11 +96,11 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 - Config: `sources_dir`.
 - Commands: `ymlib sources`, `ymlib search [--album] [--source S] [--limit N] <query>` (✓/≈ flags), `ymlib download [--album] [--force] [--no-run] <source:id>...`, `ymlib queue [run|retry [id]|clear [--failed]]`, `ymlib import <folder> [--apply] [--move] [--force] [--no-lookup]` (refuses folders inside the library).
 - Verified live: fake plugin + real MusicBrainz (album and single), and once with real Discogs (search works against the real API).
-- Added 2026-10-15: `Discover` follows symlinks, so a plugin can be linked into `sources_dir`.
+- Added 2026-10-15: `Discover` follows symlinks, so a plugin can be linked into `sources_dir` (removed with P3).
 
 ## M5 — TUI v1 ✅
 - `ymlib` with no arguments, in a terminal, opens the UI (also `ymlib tui`). Scripts and pipes get the help text. Bubble Tea v2 (`charm.land/bubbletea/v2`), bubbles textinput, lipgloss; the 16 terminal colors, so it follows the terminal theme.
-- Screens: **Search** (tracks/albums from all plugins, ✓/≈/↓ flags, details and cover; enter queues and starts downloads), **Queue** (jobs, runner log, start/stop, retry, clear), **Library** (albums by folder, tracks, tags, cover; filter; rescan; edit album or track tags with a preview), **Review** (your files next to each candidate release, with cover and tracklist; preview, apply or skip), **Settings** (configuration, presets; enter makes a preset active).
+- Screens: **Search** (tracks/albums from all plugins, ✓/≈/↓ flags, details and cover; enter queues and starts downloads), **Queue** (jobs, runner log, start/stop, retry, clear), **Library** (albums by folder, tracks, tags, cover; filter; rescan; edit album or track tags with a preview), **Review** (your files next to each candidate release, with cover and tracklist; preview, apply or skip), **Settings** (configuration, presets; enter makes a preset active; since P3 also plugins with their status, enter enables/disables).
 - Keys: tab / shift+tab / 1-5 switch screens, q quits, ctrl+c always quits. They are off while typing; `/` starts typing, esc leaves the text box. Quitting stops running downloads; they resume next time.
 - Logic stays in `internal/*`. New for the UI: `library.PlanEdit`/`ApplyEdit` (`TagEdit`, `FieldValue`) and `library.Cover`, plus `config.SetActivePreset`, which changes only that key and keeps comments. The edit form shows only the active preset's fields.
 - Covers: `internal/termimg` (from the M0 spike). Kitty and Ghostty use the Kitty graphics protocol with **Unicode placeholders**: the image is sent once, then drawn as ordinary cells, so the cell-based renderer can lay it out. True color is forced so the image id in the placeholder color survives. Images are freed on exit. Everything else, including iTerm2, Apple Terminal and tmux, uses half-blocks. iTerm2's own protocol draws at the cursor and can't be laid out as cells. `YMLIB_IMAGES=kitty|halfblock` overrides the detection.
@@ -110,32 +111,39 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 
 ---
 
-## P2 — Plugin protocol v2: running plugins ✅
-Why: protocol 1 starts the plugin for every request, so it can't keep a login session, open connections, caches or rate-limit timers between calls. Writing its own state files is not the answer.
+## P2 — Plugin protocol v2: running plugins (superseded by P3)
+Built 2026-10-15 (stdin/stdout JSON lines, `serve` mode, `close`, idle timeouts) and removed in P3. Writing a real plugin against it was hard: keeping context meant a hand-written async loop (trouble with Python's async libraries), and starting executables brought OS problems (exec bit, shebang, interpreters).
 
-**Lifecycle**
-- Every plugin still answers `<plugin> info` as a single run. `"protocol": 2` declares a running plugin (decided: no separate `persistent` flag, and a protocol 2 plugin is always run this way). `info` is asked once per `Plugin`, on its first request, so `ymlib sources` never leaves processes behind.
-- ymlib starts `<plugin> serve` on the first request (lazily). It then stays running and answers further requests.
-- ymlib sends **`close`** and closes stdin when it no longer needs the plugin. The plugin finishes or cancels its work, cleans up (logs out, closes connections, removes temp files), may answer, and exits.
-- `close` is sent when the TUI quits (after its downloads stop), when a CLI command ends (`Registry.Close`), and after `sources.idle_minutes` (default 5; 0 = only when ymlib quits) without requests. The next request starts it again.
-- A plugin still running `sources.close_seconds` (default 5) after `close` is killed, so a stuck plugin never blocks quitting.
-- If the plugin crashes, its in-flight requests fail with its last stderr line ("plugin exited: …") and the queue retries them as usual. The next request starts a new process.
-- Config (added after P2, at the user's request): `sources: {idle_minutes, close_seconds}`, merged key by key, validated (`idle_minutes >= 0`, `close_seconds >= 1`). The CLI applies them with `Registry.SetTimeouts`; `source.IdleTimeout`/`CloseTimeout` are only the defaults for `Discover`.
+## P3 — HTTP plugins ✅
+Decided 2026-11-06 in a grilling session (answers in `ANSWERS.md`, "Plugins update").
 
-**Wire format**
-- One JSON message per line. Request: `{"id": 7, "command": "search", "params": {…protocol 1 request…}}`. Answer: `{"id": 7, "result": {…protocol 1 answer…}}` or `{"id": 7, "error": "..."}`. `params`/`result` keep the request id apart from item ids and let a plugin reuse its protocol 1 handlers.
-- Requests overlap (`queue.parallel` downloads share one process); answers may come in any order. Lines with an unknown id are ignored. stdout carries only answers; logs go to stderr (ymlib keeps its last 16 KB for error messages).
-- Commands: `search`, `resolve`, `download`, `close`.
+**Model**
+- A plugin is an **HTTP server the user runs** (terminal, IDE, launchd/systemd, Docker). ymlib never starts, stops or installs plugin code; it keeps **registrations** and acts as a client. Plugins are download sources only. State lives in the plugin's memory while it runs; ymlib stores nothing for it. No SDK: the spec is `docs/plugin-protocol.md` (with a minimal Python example inline).
+- Rejected on the way: linking plugins as binary libraries (Go plugins: Linux/macOS only, exact Go version, no Python; C ABI: per-OS builds, a crash kills ymlib), ymlib starting installed plugins from a manifest, JSON-RPC (a file can't be streamed in a JSON answer; base64 or chunking reinvents HTTP).
+
+**Protocol 1 (HTTP + JSON)**
+- `GET /health` → `{name, version, protocol: 1}`; other protocol numbers are refused.
+- `POST /search {query, kind, limit}` → `{results}`; `POST /resolve {id, kind}` → `{item, tracks}`; `Item` JSON unchanged.
+- `POST /download {id}` → the file as the response body, streamed to disk (files of 250 MB+). Name from `Content-Disposition` (base name only, cleaned, no leading dot) or `<id>.<ext from Content-Type>`; a body shorter than `Content-Length` fails; an existing file is never overwritten.
+- Errors: non-2xx + `{"error": {"code": "not_found|temporary|permanent", "message"}}`. `not_found`/`permanent` fail the job; anything else (other codes, no envelope, bad JSON) is temporary and retried.
+- No auth (user's choice); the spec says listen on 127.0.0.1. Timeouts: health 2 s, search/resolve 1 min, download 30 min.
+
+**Registration and config**
+- `ymlib plugin add <name> <url>` (name chosen by the user; the /health name is only shown; added even when offline, with a note), `list` (enabled, online/offline/error), `enable`, `disable`, `remove`. `ymlib search --plugin NAME` replaces `--source`. `ymlib sources` is gone.
+- `plugins: {offline_wait_minutes: 60, registered: {<name>: {url, enabled}}}`; edits go through the YAML tree and keep comments (`config.AddPlugin`, `RemovePlugin`, `SetPluginEnabled`, sharing `editFile` with `SetActivePreset`). Old `sources_dir`/`sources:` keys fail with a hint to use `ymlib plugin add`.
+
+**Offline and disabled plugins**
+- Search skips them with a warning.
+- Migration `0005_queue_offline.sql` adds `queue_jobs.waiting_since`. When a job's plugin is offline (health check, cached per run, or a request that gets no answer) or disabled, `queue.Wait` puts it aside without using an attempt; `NextWake` ignores waiting jobs, so a run ends instead of blocking. Each run starts with `queue.Wake`, which retries them once. After `offline_wait_minutes` they fail ("… (waited 1h0m)"); `ymlib queue retry` revives them. A job whose plugin isn't registered fails permanently.
+- CLI: `download`/`queue run` report "waiting for a plugin N" and how to continue; `ymlib queue` shows them as `waiting since HH:MM: <reason>`.
+- TUI: Settings lists plugins (enabled, online/offline with version, URL) above the presets; enter toggles enabled (the registry is replaced, not mutated), `r` rechecks. Health checks run at start and every 15 s (`Deps.PluginRefresh`); when an enabled plugin goes from offline to online, or is enabled, and jobs wait, downloads start. The status bar shows "N wait for plugins"; the Queue screen marks waiting jobs with `…`.
 
 **Code**
-- `internal/source/serve.go`: the running process (lazy start, request ids, concurrent requests, idle timer, close with kill deadline, restart after a crash) behind the unchanged `Plugin` methods, so `download.Runner`, the CLI and the TUI didn't change apart from closing the registry. `ProtocolVersion` is 2; protocol 1 plugins work as before.
-- `ymlib sources` shows each plugin's protocol: "1 (per request)" or "2 (stays running)".
-- `fakesource` speaks protocol 2 with `YMLIB_FAKE_SERVE=1`, plus switches for tests (`YMLIB_FAKE_STATE`, `YMLIB_FAKE_IGNORE_CLOSE`, queries `whoami`, `slow`, `crash`).
-- Tests: one process keeps state across requests, all commands and error answers over the connection, overlapping requests answered out of order, idle close, a plugin ignoring `close` is killed, a crash restarts, protocol 1 still starts per request, `Registry.Close`, and a CLI album download in protocol 2 that uses one process and closes it. Repeated 10× under `-race`.
-
-**Not included (possible later)**
-- Progress messages during downloads (`{"id": 7, "progress": 0.42}`) for the Queue screen, and cancelling a single request by message (today a cancelled request is abandoned; its late answer is ignored).
-- State that must survive app restarts (e.g. a login token): ymlib would store it for the plugin (a `plugin_state` table, secrets in the keychain). Only once a plugin needs it.
+- `internal/source`: `client.go` (Plugin methods, `Error`, `IsPermanent`, `ErrOffline`/`IsOffline`, `Registry`, `FromConfig`, `Check`); process code, `Discover` and `testdata/fakesource` removed.
+- `internal/source/sourcetest`: in-process fake plugin (`httptest`) with the old catalog and `SetOffline` (drops connections), `SetFailOnce`, `SetCorrupt`, `Requests`. Replaces `testutil.FakeSourceDir` (removed); `testutil.Audio` added.
+- `download.Runner`: `OfflineWait`, `Summary.Waiting`, `plugin()` (registered → enabled → healthy), `fail()` turning offline errors into waits.
+- Tests: client (protocol, error codes, offline vs. cancelled, other protocols, file-name tricks, short bodies, registry/check), config (plugins section, validation, removed-key hint, edits keep comments), queue (`Wait`/`Wake` keep attempts and the start time), runner (offline waits → online imports, wait limit fails, retry, disabled), CLI (`plugin` commands, offline download then `queue run`, old-config hint), TUI (toggle plugin, offline warning, waiting jobs start when the plugin returns).
+- Verified with the real binary in temp dirs: `plugin add` while offline, `plugin list`, search warning, downloads waiting and shown in `ymlib queue`. **Not verified by hand:** search and a 250 MB download against a plugin in another process. The Bash sandbox blocks connections between local processes, so this needs a run by the user (covered in-process by the tests).
 
 ## S2 — Duplicate detection across sources ⏳
 Tune the matching tiers once real sources and Discogs data exist (Discogs rarely has ISRC/MBID, so tier 3 does more of the work).
@@ -206,5 +214,6 @@ Decided 2026-10-15 (answers in `ANSWERS.md`, "Sync update").
 - Genre/cover exception to whole-record matching (Q20) is still not implemented: with Discogs primary, genre is almost always present; covers are missing only when a provider has none. Decide whether it's still wanted.
 - S3: standard vs. deluxe default (Q22) and "playlists only for chosen artists" (Q24) were taken as the recommended defaults because the answers repeated the questions. Confirm both.
 - M4A tag writing was postponed in M2: an ffmpeg-based writer later, or a pure-Go library if one matures.
+- P3: check by hand against a plugin running in another process: `ymlib plugin add`, search, a ~250 MB download (memory stays flat), stop the plugin (downloads wait), start it (`ymlib queue run` completes).
 - S5: when the fit check finds music that doesn't fit, should `--apply` sync everything that does fit and report the rest (current assumption), or refuse until the plan fits completely?
 - S5: an artist split by album across two storages can't have one relative-path `.m3u8` playlist. Should it get one playlist per storage, or none?

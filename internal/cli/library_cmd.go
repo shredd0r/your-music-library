@@ -280,5 +280,3 @@ func reportApply(w io.Writer, verb string, r library.ApplyReport) error {
 	}
 	return nil
 }
-
-func expandHome(p string) (string, error) { return platform.ExpandHome(p) }

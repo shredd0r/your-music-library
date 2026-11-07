@@ -13,6 +13,7 @@ import (
 	flac "github.com/go-flac/go-flac/v2"
 
 	"your-music-library/internal/cleanup"
+	"your-music-library/internal/source"
 	"your-music-library/internal/tags"
 )
 
@@ -24,10 +25,11 @@ func (p permanentError) Unwrap() error { return p.error }
 // Permanent wraps err so the job fails without retries.
 func Permanent(err error) error { return permanentError{err} }
 
-// IsPermanent reports whether err was wrapped by Permanent.
+// IsPermanent reports whether err was wrapped by Permanent, or is a
+// plugin's not_found or permanent error.
 func IsPermanent(err error) bool {
 	var p permanentError
-	return errors.As(err, &p)
+	return errors.As(err, &p) || source.IsPermanent(err)
 }
 
 // Verifier checks a downloaded file; expected is the length the source

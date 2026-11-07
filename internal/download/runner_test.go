@@ -14,6 +14,7 @@ import (
 	"your-music-library/internal/library"
 	"your-music-library/internal/queue"
 	"your-music-library/internal/source"
+	"your-music-library/internal/source/sourcetest"
 	"your-music-library/internal/store"
 	"your-music-library/internal/tags"
 	"your-music-library/internal/testutil"
@@ -21,6 +22,8 @@ import (
 
 type env struct {
 	runner *Runner
+	srv    *sourcetest.Server
+	plugin *source.Plugin
 	lib    *library.Library
 	q      *queue.Queue
 	db     *sql.DB
@@ -40,14 +43,11 @@ func setup(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plugins, err := source.Discover(testutil.FakeSourceDir(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := &env{lib: lib, q: queue.New(db), db: db}
+	srv := sourcetest.New(t)
+	e := &env{lib: lib, q: queue.New(db), db: db, srv: srv, plugin: srv.Plugin("fake")}
 	var mu sync.Mutex
 	e.runner = &Runner{
-		Queue: e.q, Sources: source.NewRegistry(plugins), Lib: lib,
+		Queue: e.q, Sources: source.NewRegistry([]*source.Plugin{e.plugin}), Lib: lib,
 		Preset: config.Default().Presets["full"], Parallel: 2,
 		Backoff: func(int) time.Duration { return 0 },
 		Log: func(format string, args ...any) {
@@ -133,7 +133,7 @@ func TestSkipsTracksAlreadyInLibrary(t *testing.T) {
 
 func TestRetryAfterTemporaryFailure(t *testing.T) {
 	e := setup(t)
-	t.Setenv("YMLIB_FAKE_FAIL_ONCE", t.TempDir())
+	e.srv.SetFailOnce(true)
 	j := e.enqueue(t, source.KindTrack, "s1")
 	if sum := e.run(t); sum.Imported != 1 {
 		t.Fatalf("summary = %+v\n%s", sum, strings.Join(e.logs, "\n"))
@@ -158,7 +158,7 @@ func TestBadDownloadsFail(t *testing.T) {
 	})
 	t.Run("corrupt", func(t *testing.T) {
 		e := setup(t)
-		t.Setenv("YMLIB_FAKE_CORRUPT", "1")
+		e.srv.SetCorrupt(true)
 		j := e.enqueue(t, source.KindTrack, "t2")
 		e.run(t)
 		j, _ = e.q.Get(context.Background(), j.ID)
@@ -167,6 +167,15 @@ func TestBadDownloadsFail(t *testing.T) {
 		}
 		if entries, _ := os.ReadDir(e.lib.Root()); len(entries) != 0 {
 			t.Errorf("library not empty after failed download: %v", entries)
+		}
+	})
+	t.Run("plugin says not found", func(t *testing.T) {
+		e := setup(t)
+		j := e.enqueue(t, source.KindAlbum, "nope")
+		e.run(t)
+		j, _ = e.q.Get(context.Background(), j.ID)
+		if j.Status != queue.Failed || j.Attempts != 1 || !strings.Contains(j.LastError, "unknown id nope") {
+			t.Errorf("not_found should not retry: %+v", j)
 		}
 	})
 	t.Run("unknown source", func(t *testing.T) {
@@ -185,5 +194,77 @@ func TestVerifyUnsupportedIsPermanent(t *testing.T) {
 	os.WriteFile(p, []byte("x"), 0o644)
 	if err := Verify(context.Background(), p, 0); !IsPermanent(err) {
 		t.Errorf("Verify = %v", err)
+	}
+}
+
+func TestOfflinePluginWaits(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.srv.SetOffline(true)
+	album := e.enqueue(t, source.KindAlbum, "a1")
+	track := e.enqueue(t, source.KindTrack, "s1")
+	sum := e.run(t) // returns instead of blocking on the offline plugin
+	if sum.Waiting != 2 || sum.Failed != 0 || e.srv.Requests("/health") != 1 {
+		t.Fatalf("offline: summary = %+v, health checks %d\n%s", sum, e.srv.Requests("/health"), strings.Join(e.logs, "\n"))
+	}
+	for _, id := range []int64{album.ID, track.ID} {
+		j, _ := e.q.Get(ctx, id)
+		if j.Status != queue.Pending || j.Attempts != 0 || j.WaitingSince.IsZero() || !strings.Contains(j.LastError, "offline") {
+			t.Errorf("waiting job = %+v", j)
+		}
+	}
+
+	// still offline on the next run: keeps waiting, no attempts used
+	if sum := e.run(t); sum.Waiting != 2 {
+		t.Errorf("second run: %+v", sum)
+	}
+
+	// back online: the next run downloads everything
+	e.srv.SetOffline(false)
+	if sum := e.run(t); sum.Imported != 3 || sum.Waiting != 0 || sum.Failed != 0 {
+		t.Fatalf("online again: summary = %+v\n%s", sum, strings.Join(e.logs, "\n"))
+	}
+	if j, _ := e.q.Get(ctx, track.ID); j.Status != queue.Done || !j.WaitingSince.IsZero() {
+		t.Errorf("track = %+v", j)
+	}
+}
+
+func TestOfflinePluginFailsAfterWaiting(t *testing.T) {
+	e := setup(t)
+	e.srv.SetOffline(true)
+	j := e.enqueue(t, source.KindTrack, "s1")
+	e.run(t)
+	e.runner.OfflineWait = time.Nanosecond // the wait is over
+	if sum := e.run(t); sum.Failed != 1 || sum.Waiting != 0 {
+		t.Fatalf("summary = %+v", sum)
+	}
+	j, _ = e.q.Get(context.Background(), j.ID)
+	if j.Status != queue.Failed || !strings.Contains(j.LastError, "offline") || !strings.Contains(j.LastError, "waited") {
+		t.Errorf("job = %+v", j)
+	}
+	// queue retry brings it back
+	if n, _ := e.q.Retry(context.Background(), j.ID); n != 1 {
+		t.Fatalf("Retry = %d", n)
+	}
+	e.srv.SetOffline(false)
+	e.runner.OfflineWait = 0
+	if sum := e.run(t); sum.Imported != 1 {
+		t.Errorf("after retry: %+v", sum)
+	}
+}
+
+func TestDisabledPluginWaits(t *testing.T) {
+	e := setup(t)
+	e.plugin.Enabled = false
+	j := e.enqueue(t, source.KindTrack, "s1")
+	if sum := e.run(t); sum.Waiting != 1 || e.srv.Requests("/health") != 0 {
+		t.Fatalf("summary = %+v", sum)
+	}
+	if j, _ = e.q.Get(context.Background(), j.ID); !strings.Contains(j.LastError, "plugin fake is disabled") {
+		t.Errorf("job = %+v", j)
+	}
+	e.plugin.Enabled = true
+	if sum := e.run(t); sum.Imported != 1 {
+		t.Errorf("enabled again: %+v", sum)
 	}
 }

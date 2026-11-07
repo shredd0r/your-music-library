@@ -35,7 +35,6 @@ type Deps struct {
 	Images     library.ImageSource  // nil: no remote covers
 	Config     config.Config
 	ConfigPath string
-	SourcesDir string
 	Covers     termimg.Protocol // how covers are drawn
 	// Warnings are shown in the status line at start.
 	Warnings []string
@@ -46,6 +45,9 @@ type Deps struct {
 	// Refresh reloads the queue this often while downloads run; 0 = only
 	// on download events.
 	Refresh time.Duration
+	// PluginRefresh checks the plugins' health this often; 0 = only at
+	// start and on request.
+	PluginRefresh time.Duration
 }
 
 // Messages shared by screens.
@@ -67,6 +69,12 @@ type (
 	}
 	pendingMsg struct{ n int }
 	tickMsg    struct{}
+	// pluginsMsg carries health checks of reg's plugins.
+	pluginsMsg struct {
+		reg      *source.Registry
+		statuses []source.Status
+	}
+	pluginTickMsg struct{}
 )
 
 func status(format string, args ...any) tea.Cmd {
@@ -88,6 +96,10 @@ type shared struct {
 	d      Deps
 	cfg    config.Config
 	covers *covers
+	// sources is replaced (not changed) when plugins are enabled or
+	// disabled, so a running download keeps a consistent set.
+	sources *source.Registry
+	plugins map[string]source.Status // last health check per plugin name
 
 	dl struct {
 		running bool
@@ -95,7 +107,34 @@ type shared struct {
 		events  chan tea.Msg
 		log     []string
 	}
-	counts struct{ pending, running, failed, reviews int }
+	counts struct{ pending, running, failed, waiting, reviews int }
+}
+
+// checkPlugins asks every registered plugin for its health.
+func checkPlugins(s *shared) tea.Cmd {
+	reg := s.sources
+	return func() tea.Msg { return pluginsMsg{reg: reg, statuses: source.Check(s.ctx, reg.All())} }
+}
+
+func (s *shared) pluginTick() tea.Cmd {
+	if s.d.PluginRefresh <= 0 {
+		return nil
+	}
+	return tea.Tick(s.d.PluginRefresh, func(time.Time) tea.Msg { return pluginTickMsg{} })
+}
+
+// pluginNote describes a plugin's last health check.
+func (s *shared) pluginNote(name string) string {
+	st, ok := s.plugins[name]
+	switch {
+	case !ok:
+		return "checking…"
+	case st.Online():
+		return "online"
+	case source.IsOffline(st.Err):
+		return "offline"
+	}
+	return "error: " + st.Err.Error()
 }
 
 func (s *shared) preset() config.Preset {
@@ -114,10 +153,11 @@ func (s *shared) startDownloads() tea.Cmd {
 	ctx, cancel := context.WithCancel(s.ctx)
 	events := make(chan tea.Msg, 64)
 	r := &download.Runner{
-		Queue: s.d.Queue, Sources: s.d.Sources, Lib: s.d.Lib,
+		Queue: s.d.Queue, Sources: s.sources, Lib: s.d.Lib,
 		Identifier: s.d.Identifier, Images: s.d.Images, Preset: s.preset(),
 		Parallel: s.cfg.Queue.Parallel, Verify: s.d.Verify, Backoff: s.d.Backoff,
-		Log: func(format string, args ...any) { events <- runnerLogMsg(fmt.Sprintf(format, args...)) },
+		OfflineWait: time.Duration(s.cfg.Plugins.OfflineWaitMinutes) * time.Minute,
+		Log:         func(format string, args ...any) { events <- runnerLogMsg(fmt.Sprintf(format, args...)) },
 	}
 	s.dl.running, s.dl.cancel, s.dl.events = true, cancel, events
 	go func() {
@@ -194,8 +234,11 @@ type App struct {
 
 // New returns the root model.
 func New(ctx context.Context, d Deps) *App {
-	s := &shared{ctx: ctx, d: d, cfg: d.Config,
+	s := &shared{ctx: ctx, d: d, cfg: d.Config, sources: d.Sources, plugins: map[string]source.Status{},
 		covers: newCovers(d.Covers, uint32(time.Now().UnixNano()%0xfff000)+1)}
+	if s.sources == nil {
+		s.sources = source.NewRegistry(nil)
+	}
 	a := &App{s: s}
 	a.screens = []screen{newSearch(s), newQueueScreen(s), newLibrary(s), newReview(s), newSettings(s)}
 	if len(d.Warnings) > 0 {
@@ -206,7 +249,7 @@ func New(ctx context.Context, d Deps) *App {
 
 // Init loads every screen's data.
 func (a *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{loadQueue(a.s)}
+	cmds := []tea.Cmd{loadQueue(a.s), checkPlugins(a.s), a.s.pluginTick()}
 	for _, sc := range a.screens {
 		cmds = append(cmds, sc.init())
 	}
@@ -243,8 +286,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.err != nil && a.s.ctx.Err() == nil && !isCanceled(m.err):
 			cmds = append(cmds, errStatus(fmt.Errorf("downloads stopped: %w", m.err)))
 		default:
-			cmds = append(cmds, status("downloads: imported %d, already in library %d, failed %d",
-				m.sum.Imported, m.sum.Skipped, m.sum.Failed))
+			text := fmt.Sprintf("downloads: imported %d, already in library %d, failed %d",
+				m.sum.Imported, m.sum.Skipped, m.sum.Failed)
+			if m.sum.Waiting > 0 {
+				text += fmt.Sprintf("; %d wait for offline or disabled plugins", m.sum.Waiting)
+			}
+			cmds = append(cmds, status("%s", text))
 			if m.err == nil {
 				cmds = append(cmds, a.checkPending())
 			}
@@ -261,6 +308,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, tea.Batch(loadQueue(a.s), a.s.tick())
+	case pluginTickMsg:
+		return a, tea.Batch(checkPlugins(a.s), a.s.pluginTick())
+	case pluginsMsg:
+		if m.reg != a.s.sources {
+			return a, nil // checked before plugins were enabled or disabled
+		}
+		cameOnline := false
+		for _, st := range m.statuses {
+			if prev, seen := a.s.plugins[st.Plugin.Name]; seen && !prev.Online() && st.Online() && st.Plugin.Enabled {
+				cameOnline = true
+			}
+			a.s.plugins[st.Plugin.Name] = st
+		}
+		// downloads waiting for a plugin run as soon as one comes back
+		if cameOnline && a.s.counts.waiting > 0 && !a.s.dl.running {
+			cmds = append(cmds, a.s.startDownloads())
+		}
 	case queueMsg:
 		a.countJobs(m.jobs)
 	case reviewsMsg:
@@ -290,8 +354,8 @@ func (a *App) checkPending() tea.Cmd {
 		}
 		n := 0
 		for _, j := range jobs {
-			if j.Status == queue.Pending {
-				n++
+			if j.Status == queue.Pending && j.WaitingSince.IsZero() {
+				n++ // waiting jobs run when their plugin comes back
 			}
 		}
 		return pendingMsg{n: n}
@@ -300,8 +364,12 @@ func (a *App) checkPending() tea.Cmd {
 
 func (a *App) countJobs(jobs []queue.Job) {
 	c := &a.s.counts
-	c.pending, c.running, c.failed = 0, 0, 0
+	c.pending, c.running, c.failed, c.waiting = 0, 0, 0, 0
 	for _, j := range jobs {
+		if j.Status == queue.Pending && !j.WaitingSince.IsZero() {
+			c.waiting++ // albums too: an unresolved album waits as one job
+			continue
+		}
 		if j.Kind != source.KindTrack {
 			continue
 		}
@@ -405,9 +473,12 @@ func (a *App) header(w int) string {
 	left := stBold.Render("ymlib ") + strings.Join(tabs, "")
 	right := ""
 	if a.s.dl.running {
-		right = stAccent.Render(fmt.Sprintf("↓ %d running, %d waiting", a.s.counts.running, a.s.counts.pending))
+		right = stAccent.Render(fmt.Sprintf("↓ %d running, %d queued", a.s.counts.running, a.s.counts.pending))
 	} else if a.s.counts.failed > 0 {
 		right = stWarn.Render(fmt.Sprintf("%d failed", a.s.counts.failed))
+	}
+	if a.s.counts.waiting > 0 {
+		right = strings.TrimSpace(right + " " + stWarn.Render(fmt.Sprintf("%d wait for plugins", a.s.counts.waiting)))
 	}
 	gap := w - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -173,12 +174,12 @@ func (m *searchScreen) search() tea.Cmd {
 	if q == "" {
 		return nil
 	}
-	if len(m.s.d.Sources.All()) == 0 {
-		return errStatus(fmt.Errorf("no source plugins in %s", m.s.d.SourcesDir))
+	if len(m.s.sources.Enabled()) == 0 {
+		return errStatus(errors.New("no enabled plugins; register one with `ymlib plugin add <name> <url>`"))
 	}
 	m.seq++
 	m.busy, m.lastQuery, m.lastKind = true, q, m.kind
-	seq, kind, s := m.seq, m.kind, m.s
+	seq, kind, s, plugins := m.seq, m.kind, m.s, m.s.sources.Enabled()
 	return func() tea.Msg {
 		out := searchMsg{seq: seq}
 		var dups *library.DupIndex
@@ -188,7 +189,7 @@ func (m *searchScreen) search() tea.Cmd {
 				out.notes = append(out.notes, "duplicate check: "+err.Error())
 			}
 		}
-		for _, p := range s.d.Sources.All() {
+		for _, p := range plugins {
 			items, err := p.Search(s.ctx, q, kind, searchLimit)
 			if err != nil {
 				out.notes = append(out.notes, err.Error())
@@ -246,9 +247,9 @@ func (m *searchScreen) view(w, h int) string {
 	var lines []string
 	lines = append(lines, m.input.View())
 	switch {
-	case len(m.s.d.Sources.All()) == 0:
-		lines = append(lines, stWarn.Render("No source plugins in "+m.s.d.SourcesDir+
-			". A plugin is an executable speaking the protocol in internal/source/source.go."))
+	case len(m.s.sources.Enabled()) == 0:
+		lines = append(lines, stWarn.Render("No enabled plugins. A plugin is an HTTP server you run (docs/plugin-protocol.md);"+
+			" register it with `ymlib plugin add <name> <url>`, or enable one in Settings."))
 	case m.busy:
 		lines = append(lines, stDim.Render("searching…"))
 	case len(m.notes) > 0:

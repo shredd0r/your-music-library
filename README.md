@@ -1,8 +1,8 @@
 # ymlib: your music library
 
-A command-line tool for keeping a local music collection clean: it indexes your files, looks up correct metadata on **Discogs** and **MusicBrainz**, writes tags in the format you choose, downloads covers, and sorts files into a consistent `Artist/Album/01 - Title.flac` layout.
+A command-line and terminal tool for keeping a local music collection clean: it indexes your files, looks up correct metadata on **Discogs** and **MusicBrainz**, writes tags in the format you choose, downloads covers, and sorts files into a consistent `Artist/Album/01 - Title.flac` layout.
 
-> **Status: `0.1.0-dev`, Stage 1 complete.** Tagging, organizing, metadata lookup, importing, plugin-based downloading and the terminal UI work. Playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
+> **Status: `0.1.0-dev`, Stage 1 complete.** Tagging, organizing, metadata lookup, importing, downloading through plugin servers you run, and the terminal UI work. Playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
 
 ## What it does today
 
@@ -16,7 +16,8 @@ A command-line tool for keeping a local music collection clean: it indexes your 
 | Rename and move files according to a path template | `ymlib organize` |
 | Group singles into one `<Artist> Singles` album, or split them back | `ymlib singles` |
 | Import a folder (rips, purchases) into the library | `ymlib import` |
-| Search and download through source plugins | `ymlib search`, `ymlib download`, `ymlib queue` |
+| Register download plugins (HTTP servers you run) | `ymlib plugin` |
+| Search and download through those plugins | `ymlib search`, `ymlib download`, `ymlib queue` |
 
 **Nothing changes without asking.** Every command that modifies files shows a preview first and acts only with `--apply`. Files are never overwritten. Unknown tags (ReplayGain, comments, other pictures) are kept.
 
@@ -67,13 +68,13 @@ Run `ymlib` with no arguments, or `ymlib tui`:
 
 | Screen | What you do there |
 |---|---|
-| **1 Search** | `/` to type a query, `ctrl+t` to switch between tracks and albums, `enter` to search. Results show ✓ in library, ≈ other edition, ↓ queued, plus details and the cover. `enter` or `d` downloads. |
-| **2 Queue** | Jobs and the download log. `s` start/resume, `x` stop, `r`/`R` retry one/all failed, `c`/`C` clear finished (and failed). |
+| **1 Search** | `/` to type a query, `ctrl+t` to switch between tracks and albums, `enter` to search. Results show ✓ in library, ≈ other edition, ↓ queued, plus details and the cover. `enter` or `d` downloads. Offline plugins are skipped with a warning. |
+| **2 Queue** | Jobs and the download log. `s` start/resume, `x` stop, `r`/`R` retry one/all failed, `c`/`C` clear finished (and failed). Jobs marked `…` wait for an offline or disabled plugin. |
 | **3 Library** | Albums (`/` filters by artist, album or track title), tracks, tags and cover. `e` edits the album's or the track's tags: preview first, `y` to write. `s` rescans. |
 | **4 Review** | Albums without a confident match: your files next to each candidate release (`←→`), with cover and tracklist. `enter` previews, `y` writes, `s` skips. |
-| **5 Settings** | Configuration and presets. `enter` makes a preset active, saved to `config.yaml` with your comments kept. |
+| **5 Settings** | Configuration, plugins (online/offline) and presets. `enter` enables or disables a plugin, or makes a preset active; saved to `config.yaml` with your comments kept. `r` checks the plugins again. |
 
-`tab` or `1`–`5` switch screens, `q` quits, `esc` leaves a text box. Quitting stops downloads; they resume next time.
+`tab` or `1`–`5` switch screens, `q` quits, `esc` leaves a text box. Quitting stops downloads; they resume next time. Plugins are checked every 15 seconds; when one comes back online, downloads waiting for it start.
 
 Covers are real images in **Kitty** and **Ghostty**. Other terminals (iTerm2, Apple Terminal, inside tmux) get colored half-blocks. Set `YMLIB_IMAGES=kitty` or `YMLIB_IMAGES=halfblock` to choose.
 
@@ -119,13 +120,16 @@ Brings audio files from outside the library in (CD rips, Bandcamp downloads, …
 - Albums are identified like `identify`, and files are tagged with the active preset and copied to their `path_template` location.
 - `--move` deletes the originals after a successful import. `--no-lookup` keeps the files' own tags.
 
-### Downloads: `sources`, `search`, `download`, `queue`
+### Downloads: `plugin`, `search`, `download`, `queue`
 ```sh
-ymlib sources                          # installed source plugins
+ymlib plugin add <name> <url>          # register a plugin server you run
+ymlib plugin list                      # registered plugins, online/offline
+ymlib plugin enable|disable|remove <name>
 ymlib search rock with you             # tracks; ✓ = in library, ≈ = other edition in library
 ymlib search --album off the wall
-ymlib download fake:t1                 # <source>:<id> from the search results
-ymlib download --album fake:a1
+ymlib search --plugin NAME <query>     # only this plugin (also when disabled)
+ymlib download myplugin:t1             # <plugin>:<id> from the search results
+ymlib download --album myplugin:a1
 ymlib queue                            # jobs and results
 ymlib queue run                        # resume after Ctrl-C or a crash
 ymlib queue retry [job-id]             # failed jobs again
@@ -135,10 +139,11 @@ How a download proceeds:
 1. Albums are split into tracks, and tracks already in the library are skipped.
 2. Each track is downloaded into a hidden staging folder inside the library.
 3. The file is checked: it must decode (with ffmpeg, if installed), and its length must match what the source announced.
-4. Temporary failures are retried up to 3 times (after 30 s, 2 min, 8 min).
-5. When all tracks of an album are in, the album is identified once, tagged with the active preset and filed by `path_template`. Nothing half-finished ever appears in the library.
+4. Temporary failures are retried up to 3 times (after 30 s, 2 min, 8 min). When the plugin says the item is not found or permanently unavailable, the job fails right away.
+5. If the plugin is offline or disabled, the job waits without using up attempts. The next `ymlib queue run` (or the TUI, when the plugin is back) tries again; after `plugins.offline_wait_minutes` it fails, and `ymlib queue retry` brings it back.
+6. When all tracks of an album are in, the album is identified once, tagged with the active preset and filed by `path_template`. Nothing half-finished ever appears in the library.
 
-**Source plugins.** ymlib doesn't include any download source. A source is a separate program you put in `sources_dir` (default `~/.config/ymlib/sources/`), named after its file. A protocol 1 plugin is run once per request, as `<plugin> info|search|resolve|download`, with a JSON request on stdin and a JSON answer on stdout. A protocol 2 plugin (it says `"protocol": 2` in `info`) keeps state between requests: ymlib starts `<plugin> serve` on first use, exchanges one JSON message per line with it, and sends `close` when it quits, when a command ends, or after `sources.idle_minutes` without requests. The protocol is documented in [`internal/source/source.go`](internal/source/source.go), and the test plugin [`internal/source/testdata/fakesource`](internal/source/testdata/fakesource/main.go) is a complete example of both protocols. A plugin can also be a symlink into the sources folder. Plugin authors are responsible for using services in line with their terms.
+**Source plugins.** ymlib doesn't include any download source. A plugin is an **HTTP server you run yourself**, in any language; ymlib only keeps its address and talks to it (`GET /health`, `POST /search`, `POST /resolve`, `POST /download`, which streams the file). Register one with `ymlib plugin add <name> http://127.0.0.1:<port>`. If a plugin is offline, searches skip it and its queued downloads wait (up to `plugins.offline_wait_minutes`) instead of failing. The protocol, with a minimal Python plugin, is in [docs/plugin-protocol.md](docs/plugin-protocol.md). Plugin authors are responsible for using services in line with their terms.
 
 ### `config`, `preset`, `auth`
 ```sh
@@ -167,10 +172,10 @@ cache:
   max_age_days: 180                # cached lookups older than this are deleted
 queue:
   parallel: 2                      # simultaneous downloads
-sources_dir: ""                    # source plugins; default ~/.config/ymlib/sources
-sources:                           # plugins that keep running (protocol 2)
-  idle_minutes: 5                  # close a plugin after this long without requests; 0 = when ymlib quits
-  close_seconds: 5                 # kill a plugin that hasn't exited this long after close
+plugins:
+  offline_wait_minutes: 60         # downloads of an offline or disabled plugin wait this long, then fail
+  registered:                      # managed by `ymlib plugin add|remove|enable|disable`
+    myplugin: {url: "http://127.0.0.1:8765", enabled: true}
 presets:
   car:                             # your own presets
     fields: [Title, Artist, Album, Track Number, Picture Cover]
@@ -209,7 +214,7 @@ Names are made safe for FAT32/exFAT (SD cards, players): characters like `/ \ : 
 
 | What | Path |
 |---|---|
-| Config | `~/.config/ymlib/config.yaml` (`$XDG_CONFIG_HOME`) |
+| Config, including registered plugins | `~/.config/ymlib/config.yaml` (`$XDG_CONFIG_HOME`) |
 | Index and cache database | `~/.local/share/ymlib/library.db` (`$XDG_DATA_HOME`) |
 | Cover image cache | `~/.cache/ymlib/covers` (`$XDG_CACHE_HOME`) |
 | Discogs token | OS keychain (`YMLIB_DISCOGS_TOKEN` overrides it) |
@@ -226,12 +231,14 @@ make check    # lint + test
 make fmt
 ```
 
-Tests never touch the network, your home directory or your keychain. Provider responses are recorded fixtures in `internal/metadata/testdata`. Download tests use a fake source plugin, built automatically from `internal/source/testdata/fakesource`.
+Tests never touch the network, your home directory or your keychain. Provider responses are recorded fixtures in `internal/metadata/testdata`. Download tests use a fake plugin server running inside the test process (`internal/source/sourcetest`).
 
 Project docs:
 - [SPEC.md](SPEC.md): the original idea.
 - [PLAN-stage1.md](PLAN-stage1.md): design decisions.
 - [MILESTONES.md](MILESTONES.md): roadmap and status.
+- [ANSWERS.md](ANSWERS.md): answers from the design sessions.
+- [docs/plugin-protocol.md](docs/plugin-protocol.md): how to write a download plugin.
 - [CLAUDE.md](CLAUDE.md): conventions for AI-assisted development.
 
 ## Roadmap

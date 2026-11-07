@@ -64,17 +64,13 @@ func (a *app) runTUI(cmd *cobra.Command) (err error) {
 		return err
 	}
 	defer cleanup.Close(&err, db)
-	reg, err := a.registry()
-	if err != nil {
-		return err
-	}
-	defer reg.Close() // after the UI has stopped its downloads
 	ctx := cmd.Context()
 	d := tui.Deps{
-		Lib: lib, Queue: queue.New(db), Sources: reg,
-		Config: a.cfg, ConfigPath: a.configPath, SourcesDir: a.sourcesDir(),
-		Covers:  termimg.Detect(os.Getenv),
-		Refresh: 2 * time.Second,
+		Lib: lib, Queue: queue.New(db), Sources: a.registry(),
+		Config: a.cfg, ConfigPath: a.configPath,
+		Covers:        termimg.Detect(os.Getenv),
+		Refresh:       2 * time.Second,
+		PluginRefresh: 15 * time.Second,
 	}
 	// Warnings are shown inside the UI; anything printed to the terminal
 	// would be drawn over.

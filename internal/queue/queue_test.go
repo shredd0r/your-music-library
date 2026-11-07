@@ -137,3 +137,48 @@ func TestRecoverAndClear(t *testing.T) {
 		t.Errorf("cleared %d, want 3", n)
 	}
 }
+
+func TestWaitKeepsAttemptsUntilWake(t *testing.T) {
+	q, _, now := newQueue(t)
+	ctx := context.Background()
+	q.Enqueue(ctx, "fake", source.KindTrack, source.Item{ID: "1"}, 0)
+	start := *now
+	j, _, _ := q.Claim(ctx, source.KindTrack)
+	since, err := q.Wait(ctx, j.ID, "fake is offline")
+	if err != nil || !since.Equal(start) {
+		t.Fatalf("Wait = %v, %v", since, err)
+	}
+	j, _ = q.Get(ctx, j.ID)
+	if j.Status != Pending || j.Attempts != 0 || j.LastError != "fake is offline" || !j.WaitingSince.Equal(start) {
+		t.Errorf("waiting job = %+v", j)
+	}
+	*now = now.Add(24 * time.Hour)
+	if _, ok, _ := q.Claim(ctx, source.KindTrack); ok {
+		t.Error("a waiting job was claimed before Wake")
+	}
+	if _, pending, _ := q.NextWake(ctx); pending {
+		t.Error("NextWake counts a waiting job, so a run would block on it")
+	}
+	if n, _ := q.Waiting(ctx); n != 1 {
+		t.Errorf("Waiting = %d", n)
+	}
+
+	if n, err := q.Wake(ctx); n != 1 || err != nil {
+		t.Fatalf("Wake = %d, %v", n, err)
+	}
+	j, ok, _ := q.Claim(ctx, source.KindTrack)
+	if !ok {
+		t.Fatal("not claimable after Wake")
+	}
+	// still offline: the wait keeps its start
+	if since, _ := q.Wait(ctx, j.ID, "fake is offline"); !since.Equal(start) {
+		t.Errorf("second wait restarted the clock: %v", since)
+	}
+	// reached again: a real attempt clears the wait
+	q.Wake(ctx)
+	j, _, _ = q.Claim(ctx, source.KindTrack)
+	q.Fail(ctx, j.ID, errors.New("timeout"), true, time.Minute)
+	if j, _ = q.Get(ctx, j.ID); !j.WaitingSince.IsZero() || j.Attempts != 1 {
+		t.Errorf("after an attempt = %+v", j)
+	}
+}

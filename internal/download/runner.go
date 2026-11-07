@@ -39,13 +39,19 @@ type Runner struct {
 	Backoff func(attempt int) time.Duration
 	// Log receives one line per event.
 	Log func(format string, args ...any)
+	// OfflineWait is how long jobs wait for an offline or disabled plugin
+	// before they fail; 0 means an hour.
+	OfflineWait time.Duration
 
 	ingestMu sync.Mutex
+	healthMu sync.Mutex
+	health   map[string]error // per Run: plugin name -> health check result
 }
 
-// Summary counts outcomes of one Run.
+// Summary counts outcomes of one Run. Waiting jobs wait for an offline or
+// disabled plugin and are tried again by the next Run.
 type Summary struct {
-	Imported, Skipped, Failed int
+	Imported, Skipped, Failed, Waiting int
 }
 
 func (r *Runner) logf(format string, args ...any) {
@@ -79,6 +85,12 @@ func (r *Runner) Run(ctx context.Context) (Summary, error) {
 	if _, err := r.Queue.Recover(ctx); err != nil {
 		return sum, err
 	}
+	if _, err := r.Queue.Wake(ctx); err != nil {
+		return sum, err
+	}
+	r.healthMu.Lock()
+	r.health = map[string]error{}
+	r.healthMu.Unlock()
 	for {
 		if err := r.expandAlbums(ctx); err != nil {
 			return sum, err
@@ -95,7 +107,10 @@ func (r *Runner) Run(ctx context.Context) (Summary, error) {
 		}
 		if !pending {
 			r.warnCleanup(cleanup.RemoveIfEmpty(r.abs(library.StagingDir)))
-			return sum, nil
+			if sum.Waiting, err = r.Queue.Waiting(ctx); err == nil && sum.Waiting > 0 {
+				r.logf("%d downloads wait for offline or disabled plugins; they run again with the next queue run", sum.Waiting)
+			}
+			return sum, err
 		}
 		if d := time.Until(wake); d > 0 {
 			r.logf("waiting %s for the next retry", d.Round(time.Second))
@@ -110,17 +125,85 @@ func (r *Runner) Run(ctx context.Context) (Summary, error) {
 	}
 }
 
-func (r *Runner) fail(ctx context.Context, j queue.Job, err error) error {
+// fail records a failed attempt; final reports that the job failed for
+// good. An offline plugin is not an attempt: the job waits instead.
+func (r *Runner) fail(ctx context.Context, j queue.Job, err error) (final bool, _ error) {
+	if source.IsOffline(err) && !IsPermanent(err) {
+		r.setHealth(j.Source, err)
+		return r.wait(ctx, j, err.Error())
+	}
 	st, ferr := r.Queue.Fail(ctx, j.ID, err, !IsPermanent(err), r.backoff(j.Attempts+1))
 	if ferr != nil {
-		return ferr
+		return false, ferr
 	}
 	if st == queue.Pending {
 		r.logf("! %s %s: %v (will retry)", j.Ref(), j.Item.Title, err)
-	} else {
-		r.logf("✗ %s %s: %v", j.Ref(), j.Item.Title, err)
+		return false, nil
 	}
-	return nil
+	r.logf("✗ %s %s: %v", j.Ref(), j.Item.Title, err)
+	return true, nil
+}
+
+// wait puts j aside until the next Run because its plugin can't be used,
+// or fails it once it has waited longer than OfflineWait.
+func (r *Runner) wait(ctx context.Context, j queue.Job, reason string) (final bool, _ error) {
+	since, err := r.Queue.Wait(ctx, j.ID, reason)
+	if err != nil {
+		return false, err
+	}
+	limit := r.OfflineWait
+	if limit <= 0 {
+		limit = time.Hour
+	}
+	if waited := time.Since(since); waited >= limit {
+		return r.fail(ctx, j, Permanent(fmt.Errorf("%s (waited %s)", reason, waited.Round(time.Minute))))
+	}
+	if j.WaitingSince.IsZero() {
+		r.logf("… %s %s: %s; waiting", j.Ref(), j.Item.Title, reason)
+	}
+	return false, nil
+}
+
+// plugin returns j's plugin if it can be used now. Otherwise the job is
+// handled (failed or set waiting) and p is nil; final reports that it
+// failed for good.
+func (r *Runner) plugin(ctx context.Context, j queue.Job) (p *source.Plugin, final bool, err error) {
+	p, err = r.Sources.Get(j.Source)
+	if err != nil {
+		final, err = r.fail(ctx, j, Permanent(err))
+		return nil, final, err
+	}
+	if !p.Enabled {
+		final, err = r.wait(ctx, j, "plugin "+p.Name+" is disabled")
+		return nil, final, err
+	}
+	r.healthMu.Lock()
+	herr, checked := r.health[p.Name]
+	r.healthMu.Unlock()
+	if !checked {
+		_, herr = p.Health(ctx)
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+		r.setHealth(p.Name, herr)
+	}
+	switch {
+	case herr == nil:
+		return p, false, nil
+	case source.IsPermanent(herr):
+		final, err = r.fail(ctx, j, Permanent(herr))
+	default: // offline, or answering with errors
+		final, err = r.wait(ctx, j, herr.Error())
+	}
+	return nil, final, err
+}
+
+func (r *Runner) setHealth(name string, err error) {
+	r.healthMu.Lock()
+	defer r.healthMu.Unlock()
+	if r.health != nil {
+		r.health[name] = err
+	}
 }
 
 func (r *Runner) expandAlbums(ctx context.Context) error {
@@ -129,11 +212,11 @@ func (r *Runner) expandAlbums(ctx context.Context) error {
 		if err != nil || !ok {
 			return err
 		}
-		p, err := r.Sources.Get(j.Source)
+		p, _, err := r.plugin(ctx, j)
 		if err != nil {
-			if err := r.fail(ctx, j, Permanent(err)); err != nil {
-				return err
-			}
+			return err
+		}
+		if p == nil {
 			continue
 		}
 		album, tracks, err := p.Resolve(ctx, j.SourceID, source.KindAlbum)
@@ -141,7 +224,7 @@ func (r *Runner) expandAlbums(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if err := r.fail(ctx, j, err); err != nil {
+			if _, err := r.fail(ctx, j, err); err != nil {
 				return err
 			}
 			continue
@@ -222,10 +305,12 @@ func (r *Runner) abs(rel string) string { return filepath.Join(r.Lib.Root(), fil
 // away; album tracks wait in staging for finishAlbums.
 func (r *Runner) processTrack(ctx context.Context, j queue.Job, sum *Summary, mu *sync.Mutex) error {
 	count := func(f *int) { mu.Lock(); *f++; mu.Unlock() }
-	p, err := r.Sources.Get(j.Source)
-	if err != nil {
+	p, final, err := r.plugin(ctx, j)
+	if final {
 		count(&sum.Failed)
-		return r.fail(ctx, j, Permanent(err))
+	}
+	if err != nil || p == nil {
+		return err
 	}
 	if j.Item.Title == "" {
 		// queued by reference only: ask the source for the metadata
@@ -237,10 +322,11 @@ func (r *Runner) processTrack(ctx context.Context, j queue.Job, sum *Summary, mu
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if IsPermanent(err) || j.Attempts+1 >= queue.MaxAttempts {
+			final, err := r.fail(ctx, j, err)
+			if final {
 				count(&sum.Failed)
 			}
-			return r.fail(ctx, j, err)
+			return err
 		}
 		j.Item = tracks[0]
 		if err := r.Queue.SetItem(ctx, j.ID, j.Item); err != nil {
@@ -283,11 +369,12 @@ func (r *Runner) processTrack(ctx context.Context, j queue.Job, sum *Summary, mu
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if st, _ := r.Queue.Get(ctx, j.ID); st.Attempts+1 >= queue.MaxAttempts || IsPermanent(err) {
+		r.warnCleanup(cleanup.RemoveAll(r.abs(dir)))
+		final, err := r.fail(ctx, j, err)
+		if final {
 			count(&sum.Failed)
 		}
-		r.warnCleanup(cleanup.RemoveAll(r.abs(dir)))
-		return r.fail(ctx, j, err)
+		return err
 	}
 	rel, _ := filepath.Rel(r.Lib.Root(), file)
 	rel = filepath.ToSlash(rel)

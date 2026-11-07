@@ -46,3 +46,37 @@ Request: sync should handle devices, not only external storages. Some MP3 player
 - Placement in auto mode: fill storages in the user's order.
 - Library doesn't fit: "App should calculate 'does albums fits?' befor start syncing" (fit check in the preview, before anything is copied).
 - Only some storages connected: sync what's there.
+
+## Plugins update (2026-11-06)
+Grilling on replacing protocols 1/2 after trying to write a Python plugin.
+
+- Problem: a plugin must keep context between calls; with the stdin/stdout protocol that was hard to implement, and Python's different async libraries got in the way. OS support (starting executables) was a problem too.
+- Q2: mostly the user writes plugins, in Python; keep the door open for any language.
+- Q3: first idea was linking plugins as a binary library, for an "install an add-on" feel (like browser extensions or Claude Desktop connectors).
+- Q4: replace protocols 1 and 2 entirely.
+- Q5: RPC servers as plugins, ymlib as client.
+- Q6: state only while ymlib runs.
+- Q7: one-command install and enable/disable (install later dropped, see Q22b).
+- Q8: spec only, no SDK.
+- Q9/Q9b: first "user runs it", then "ymlib starts installed plugins", finally (Q22b) **the user runs plugins; ymlib only checks health**. Q29 confirmed: registrations only, no install, no shutdown call, no idle timeouts.
+- Q10: JSON-RPC 2.0 over HTTP at first; then (Q34b) files can be 250 MB, chunks would reinvent the wheel → **plain HTTP + JSON API** (Q34c shape accepted).
+- Q13/Q13b: thought about moving all settings to SQLite; decided to keep config.yaml.
+- Q14/Q18: the port is the plugin's business; ymlib keeps the URL.
+- Q15: no auth token.
+- Q16/Q19: download returns the file's bytes, streamed as the HTTP response body ("the same as a gRPC stream").
+- Q17: shutdown method (dropped with Q29: ymlib doesn't stop plugins).
+- Q20: download sources only.
+- Q21: reuse a running server (moot: always running).
+- Q22: the plugin's config is its own responsibility; ymlib doesn't touch it.
+- Q23: three error codes: not_found, temporary, permanent.
+- Q25: "plugin" everywhere.
+- Q26: no startup wait (moot). Q27: plugin output not collected.
+- Q28: TUI Settings lists plugins with their current status.
+- Q30: register a full URL, default localhost.
+- Q31: `GET /health`, no `info`.
+- Q32: the name is always chosen by the user.
+- Q33/Q37/Q37b: offline or disabled → search skips, downloads wait, then fail after `plugins.offline_wait_minutes` (default 60).
+- Q39: Markdown spec only.
+- Q40: `protocol` number in /health.
+- Q41: remove the old code; old config keys fail with a hint.
+- Q42: new milestone P3 before S2.

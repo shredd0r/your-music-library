@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,26 +24,8 @@ import (
 	"your-music-library/internal/source"
 )
 
-func (a *app) sourcesDir() string {
-	if a.cfg.SourcesDir != "" {
-		if d, err := expandHome(a.cfg.SourcesDir); err == nil {
-			return d
-		}
-	}
-	return filepath.Join(filepath.Dir(a.configPath), "sources")
-}
-
-// registry finds the source plugins. Callers Close it when done, which
-// stops plugins that keep running (protocol 2).
-func (a *app) registry() (*source.Registry, error) {
-	plugins, err := source.Discover(a.sourcesDir())
-	if err != nil {
-		return nil, err
-	}
-	reg := source.NewRegistry(plugins)
-	reg.SetTimeouts(time.Duration(a.cfg.Sources.IdleMinutes)*time.Minute, time.Duration(a.cfg.Sources.CloseSeconds)*time.Second)
-	return reg, nil
-}
+// registry returns the plugins registered in config.yaml.
+func (a *app) registry() *source.Registry { return source.FromConfig(a.cfg.Plugins) }
 
 // withInterrupt cancels ctx on Ctrl-C so jobs stop cleanly and resume later.
 func withInterrupt(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -50,68 +33,26 @@ func withInterrupt(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 func newDownloadCommands(a *app, loadConfig preRun) []*cobra.Command {
-	sources := &cobra.Command{
-		Use:     "sources",
-		Short:   "List source plugins",
-		Args:    cobra.NoArgs,
-		PreRunE: loadConfig,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			w := cmd.OutOrStdout()
-			reg, err := a.registry()
-			if err != nil {
-				return err
-			}
-			defer reg.Close()
-			if len(reg.All()) == 0 {
-				fmt.Fprintf(w, "No source plugins in %s.\n", a.sourcesDir())
-				fmt.Fprintln(w, "A plugin is an executable speaking the JSON protocol described in internal/source/source.go.")
-				return nil
-			}
-			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tVERSION\tPROTOCOL\tSTATUS")
-			for _, p := range reg.All() {
-				info, err := p.Info(cmd.Context())
-				status := "ok"
-				if err != nil {
-					status = "error: " + err.Error()
-				}
-				protocol := "—"
-				switch info.Protocol {
-				case 1:
-					protocol = "1 (per request)"
-				case 2:
-					protocol = "2 (stays running)"
-				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.Name, orDash(info.Version), protocol, status)
-			}
-			return tw.Flush()
-		},
-	}
-
 	var searchAlbum bool
-	var searchSource string
+	var searchPlugin string
 	var searchLimit int
 	search := &cobra.Command{
-		Use:     "search [--album] [--source NAME] <query...>",
-		Short:   "Search source plugins; ✓ = in library, ≈ = other edition in library",
+		Use:     "search [--album] [--plugin NAME] <query...>",
+		Short:   "Search plugins; ✓ = in library, ≈ = other edition in library",
 		Args:    cobra.MinimumNArgs(1),
 		PreRunE: loadConfig,
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
-			reg, err := a.registry()
-			if err != nil {
-				return err
-			}
-			defer reg.Close()
-			plugins := reg.All()
-			if searchSource != "" {
-				p, err := reg.Get(searchSource)
+			reg := a.registry()
+			plugins := reg.Enabled()
+			if searchPlugin != "" {
+				p, err := reg.Get(searchPlugin)
 				if err != nil {
 					return err
 				}
 				plugins = []*source.Plugin{p}
 			}
 			if len(plugins) == 0 {
-				return fmt.Errorf("no source plugins in %s (see `ymlib sources`)", a.sourcesDir())
+				return errors.New("no enabled plugins (see `ymlib plugin list`; register one with `ymlib plugin add <name> <url>`)")
 			}
 			lib, db, err := a.openLibrary()
 			if err != nil {
@@ -181,7 +122,7 @@ func newDownloadCommands(a *app, loadConfig preRun) []*cobra.Command {
 		},
 	}
 	search.Flags().BoolVar(&searchAlbum, "album", false, "search albums instead of tracks")
-	search.Flags().StringVar(&searchSource, "source", "", "search only this source plugin")
+	search.Flags().StringVar(&searchPlugin, "plugin", "", "search only this plugin (also when disabled)")
 	search.Flags().IntVar(&searchLimit, "limit", 20, "results per source")
 
 	var dlAlbum, dlForce, dlNoRun bool
@@ -234,7 +175,7 @@ func newDownloadCommands(a *app, loadConfig preRun) []*cobra.Command {
 	dl.Flags().BoolVar(&dlForce, "force", false, "download tracks even if they are already in the library")
 	dl.Flags().BoolVar(&dlNoRun, "no-run", false, "only add to the queue")
 
-	return []*cobra.Command{sources, search, dl, newQueueCommand(a, loadConfig), newImportCommand(a, loadConfig)}
+	return []*cobra.Command{newPluginCommand(a, loadConfig), search, dl, newQueueCommand(a, loadConfig), newImportCommand(a, loadConfig)}
 }
 
 func clock(d time.Duration) string {
@@ -247,11 +188,7 @@ func clock(d time.Duration) string {
 
 // runQueue processes the download queue with the configured providers.
 func (a *app) runQueue(cmd *cobra.Command, lib *library.Library, db *sql.DB, force bool) error {
-	reg, err := a.registry()
-	if err != nil {
-		return err
-	}
-	defer reg.Close()
+	reg := a.registry()
 	ctx, stop := withInterrupt(cmd.Context())
 	defer stop()
 	w, ew := cmd.OutOrStdout(), cmd.ErrOrStderr()
@@ -259,7 +196,8 @@ func (a *app) runQueue(cmd *cobra.Command, lib *library.Library, db *sql.DB, for
 	r := &download.Runner{
 		Queue: queue.New(db), Sources: reg, Lib: lib, Preset: preset,
 		Parallel: a.cfg.Queue.Parallel, Force: force,
-		Log: func(format string, args ...any) { fmt.Fprintf(w, format+"\n", args...) },
+		OfflineWait: time.Duration(a.cfg.Plugins.OfflineWaitMinutes) * time.Minute,
+		Log:         func(format string, args ...any) { fmt.Fprintf(w, format+"\n", args...) },
 	}
 	ms, err := a.openMetadata(ctx, db, ew)
 	if err != nil {
@@ -269,7 +207,11 @@ func (a *app) runQueue(cmd *cobra.Command, lib *library.Library, db *sql.DB, for
 		r.Identifier, r.Images = ms.identifier, ms.images
 	}
 	sum, err := r.Run(ctx)
-	fmt.Fprintf(w, "imported %d, already in library %d, failed %d\n", sum.Imported, sum.Skipped, sum.Failed)
+	fmt.Fprintf(w, "imported %d, already in library %d, failed %d", sum.Imported, sum.Skipped, sum.Failed)
+	if sum.Waiting > 0 {
+		fmt.Fprintf(w, ", waiting for a plugin %d", sum.Waiting)
+	}
+	fmt.Fprintln(w)
 	if ctx.Err() != nil {
 		fmt.Fprintln(w, "Interrupted. Run `ymlib queue run` to continue.")
 		return nil
@@ -282,6 +224,9 @@ func (a *app) runQueue(cmd *cobra.Command, lib *library.Library, db *sql.DB, for
 	}
 	if sum.Failed > 0 {
 		fmt.Fprintln(w, "See `ymlib queue` for errors; `ymlib queue retry` tries failed jobs again.")
+	}
+	if sum.Waiting > 0 {
+		fmt.Fprintf(w, "Start the plugin (see `ymlib plugin list`) and run `ymlib queue run`; waiting downloads fail after %d minutes.\n", a.cfg.Plugins.OfflineWaitMinutes)
 	}
 	return nil
 }
@@ -393,10 +338,15 @@ func printJobs(w io.Writer, jobs []queue.Job) error {
 		if j.File != "" && j.Note != "downloaded" {
 			result = strings.TrimSpace(j.Note + ": " + j.File)
 		}
-		if j.LastError != "" {
+		status := string(j.Status)
+		switch {
+		case !j.WaitingSince.IsZero() && j.Status == queue.Pending:
+			status = "waiting"
+			result = fmt.Sprintf("since %s: %s", j.WaitingSince.Format("15:04"), j.LastError)
+		case j.LastError != "":
 			result = fmt.Sprintf("attempt %d: %s", j.Attempts, j.LastError)
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", j.ID, j.Status, ref, name, result)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", j.ID, status, ref, name, result)
 	}
 	return tw.Flush()
 }

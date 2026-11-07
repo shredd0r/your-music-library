@@ -20,6 +20,7 @@ import (
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/queue"
 	"your-music-library/internal/source"
+	"your-music-library/internal/source/sourcetest"
 	"your-music-library/internal/store"
 	"your-music-library/internal/tags"
 	"your-music-library/internal/termimg"
@@ -31,6 +32,7 @@ import (
 type harness struct {
 	t       *testing.T
 	app     *App
+	srv     *sourcetest.Server // the fake plugin, registered as "fake"
 	lib     *library.Library
 	db      *sql.DB
 	cfgPath string
@@ -52,28 +54,25 @@ func newHarness(t *testing.T, prepare func(h *harness)) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv := sourcetest.New(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte("# test config\nlibrary_path: "+root+"\n"), 0o644); err != nil {
+	cfgText := "# test config\nlibrary_path: " + root + "\nplugins:\n  registered:\n    fake: {url: \"" + srv.URL + "\", enabled: true}\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srcDir := testutil.FakeSourceDir(t)
-	plugins, err := source.Discover(srcDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &harness{t: t, lib: lib, db: db, cfgPath: cfgPath}
+	h := &harness{t: t, lib: lib, db: db, cfgPath: cfgPath, srv: srv}
 	if prepare != nil {
 		prepare(h)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	h.app = New(ctx, Deps{
-		Lib: lib, Queue: queue.New(db), Sources: source.NewRegistry(plugins),
-		Config: cfg, ConfigPath: cfgPath, SourcesDir: srcDir, Covers: termimg.HalfBlock,
+		Lib: lib, Queue: queue.New(db), Sources: source.FromConfig(cfg.Plugins),
+		Config: cfg, ConfigPath: cfgPath, Covers: termimg.HalfBlock,
 		// the fake plugin's "long" track claims 5 minutes
 		Verify: func(_ context.Context, _ string, expected time.Duration) error {
 			if expected > time.Minute {
@@ -430,6 +429,62 @@ func TestSettingsSwitchPreset(t *testing.T) {
 	h.wantScreen("* mp3-player")
 	if h.app.s.preset().Name != "mp3-player" {
 		t.Errorf("preset in use = %q", h.app.s.preset().Name)
+	}
+}
+
+func TestSettingsTogglePlugin(t *testing.T) {
+	h := newHarness(t, nil)
+	h.keys("esc", "5")
+	h.wantScreen("Plugins", "fake", "enabled", "online (fake 1.0)", h.srv.URL)
+	h.keys("up", "enter") // the plugin row is above the presets
+	if !strings.Contains(h.status(), "fake is disabled") {
+		t.Fatalf("status = %q", h.status())
+	}
+	h.wantScreen("disabled")
+	data, _ := os.ReadFile(h.cfgPath)
+	if !strings.Contains(string(data), "enabled: false") || !strings.Contains(string(data), "# test config") {
+		t.Errorf("config file:\n%s", data)
+	}
+	// search uses enabled plugins only
+	h.keys("1", "/")
+	h.typeText("rock")
+	h.keys("enter")
+	if !strings.Contains(h.status(), "no enabled plugins") {
+		t.Errorf("search with the plugin disabled: status %q", h.status())
+	}
+	h.keys("esc", "5", "enter")
+	if !strings.Contains(h.status(), "fake is enabled") || !h.app.s.sources.Enabled()[0].Enabled {
+		t.Errorf("status = %q", h.status())
+	}
+}
+
+func TestOfflinePluginInTheUI(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.srv.SetOffline(true) })
+	h.keys("5")
+	h.wantScreen("offline")
+	h.keys("1", "/")
+	h.typeText("rock")
+	h.keys("enter")
+	h.wantScreen("warning: fake search: offline")
+
+	if _, _, err := queue.New(h.db).Enqueue(context.Background(), "fake", source.KindTrack, source.Item{ID: "s1"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	h.keys("esc", "2", "s") // start downloads: the job waits instead of failing
+	if !strings.Contains(h.status(), "1 wait for offline or disabled plugins") {
+		t.Fatalf("status = %q", h.status())
+	}
+	h.wantScreen("waiting since", "offline", "1 wait for plugins")
+
+	// the plugin comes back: the next health check starts the downloads
+	h.srv.SetOffline(false)
+	h.send(pluginTickMsg{})
+	if !strings.Contains(h.status(), "imported 1") {
+		t.Fatalf("after the plugin came back: status = %q", h.status())
+	}
+	h.wantScreen("Downloads idle")
+	if strings.Contains(h.screen(), "wait for plugins") {
+		t.Errorf("still waiting:\n%s", h.screen())
 	}
 }
 

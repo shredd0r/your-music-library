@@ -19,14 +19,21 @@ func fixtureDir() string {
 	return filepath.Join(filepath.Dir(file), "testdata")
 }
 
-// CopyAudio copies the tiny untagged fixture for ext ("flac" or "mp3") to
-// dst, creating parent directories, and returns dst.
-func CopyAudio(t testing.TB, ext, dst string) string {
+// Audio returns the tiny untagged fixture for ext ("flac" or "mp3").
+func Audio(t testing.TB, ext string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(fixtureDir(), "tiny."+ext))
 	if err != nil {
 		t.Fatalf("fixture tiny.%s: %v", ext, err)
 	}
+	return data
+}
+
+// CopyAudio copies the tiny untagged fixture for ext ("flac" or "mp3") to
+// dst, creating parent directories, and returns dst.
+func CopyAudio(t testing.TB, ext, dst string) string {
+	t.Helper()
+	data := Audio(t, ext)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatal(err)
 	}
