@@ -1,7 +1,7 @@
 # ymlib — Milestones
 
 This is the working roadmap. Read it at the start of a session to know where the project stands.
-- Design decisions and their reasons: `PLAN-stage1.md` (settled decisions) and `ANSWERS.md` (raw answers from the grilling session).
+- Design decisions and their reasons: `PLAN-stage1.md` (settled decisions).
 - Original idea: `SPEC.md`.
 
 Status legend: ✅ done · 🚧 in progress · ⏳ not started
@@ -18,9 +18,11 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | **Later stages** | | |
 | P2 | Plugin protocol v2: plugins keep running until `close` | superseded by P3 |
 | P3 | HTTP plugins: servers the user runs, ymlib is a client | ✅ 2026-11-06 |
+| T1 | TUI only: CLI features move into the TUI, then the CLI is removed | ⏳ |
+| T2 | One fixed tag format (no presets, no grouped singles, ASCII text), Tidy library | ⏳ |
 | S2 | Duplicate detection polished across sources | ⏳ |
-| S3 | YAML batch download list | ⏳ |
-| S4 | Artist playlists | ⏳ |
+| S3 | Batch download list (YAML file, TUI Batch screen, you pick each result) | ⏳ |
+| S4 | `This is <Artist>` playlists, generated on request | ⏳ |
 | S5 | Device sync: devices made of several storages (internal + SD), automatic or manual split | ⏳ |
 | S6+ | Background sync, per-device format conversion, Last.fm/Spotify, command bar | ⏳ |
 
@@ -115,7 +117,7 @@ Goal: choose libraries before building on them. Code lives in `spikes/tagspike`,
 Built 2026-10-15 (stdin/stdout JSON lines, `serve` mode, `close`, idle timeouts) and removed in P3. Writing a real plugin against it was hard: keeping context meant a hand-written async loop (trouble with Python's async libraries), and starting executables brought OS problems (exec bit, shebang, interpreters).
 
 ## P3 — HTTP plugins ✅
-Decided 2026-11-06 in a grilling session (answers in `ANSWERS.md`, "Plugins update").
+Decided 2026-11-06 in a grilling session.
 
 **Model**
 - A plugin is an **HTTP server the user runs** (terminal, IDE, launchd/systemd, Docker). ymlib never starts, stops or installs plugin code; it keeps **registrations** and acts as a client. Plugins are download sources only. State lives in the plugin's memory while it runs; ymlib stores nothing for it. No SDK: the spec is `docs/plugin-protocol.md` (with a minimal Python example inline).
@@ -145,27 +147,69 @@ Decided 2026-11-06 in a grilling session (answers in `ANSWERS.md`, "Plugins upda
 - Tests: client (protocol, error codes, offline vs. cancelled, other protocols, file-name tricks, short bodies, registry/check), config (plugins section, validation, removed-key hint, edits keep comments), queue (`Wait`/`Wake` keep attempts and the start time), runner (offline waits → online imports, wait limit fails, retry, disabled), CLI (`plugin` commands, offline download then `queue run`, old-config hint), TUI (toggle plugin, offline warning, waiting jobs start when the plugin returns).
 - Verified with the real binary in temp dirs: `plugin add` while offline, `plugin list`, search warning, downloads waiting and shown in `ymlib queue`. **Not verified by hand:** search and a 250 MB download against a plugin in another process. The Bash sandbox blocks connections between local processes, so this needs a run by the user (covered in-process by the tests).
 
+## T1 — TUI only ⏳
+Decided 2026-11-12.
+- ymlib becomes **TUI-only**. `ymlib` opens the TUI. There are no subcommands and no flags (no `--config`, no `--version`). Started outside a terminal, it prints an error. No desktop UI is planned.
+- **Order:** first give every kept CLI-only feature a TUI equivalent, then delete the commands in `internal/cli` and the cobra dependency in the same milestone, so no feature disappears in between.
+- **First start:** if `config.yaml` is missing, the TUI writes the default one and says where.
+- **Settings:**
+  - shows the config file path;
+  - plugins: **add** (name + URL) and **remove**, next to the existing enable/disable;
+  - Discogs token: status only, "set (keychain)", "set (environment)" or "not set". There is no input field. The README documents `security add-generic-password -s ymlib -a discogs-token -w <token>` and `YMLIB_DISCOGS_TOKEN`. The keychain write and delete code goes (`secrets.Set`/`Delete`).
+- **Library screen:**
+  - `s` rescan (exists): new and changed files, drops rows of files that are gone;
+  - `S` full rebuild: rereads every file, ignoring size and mtime;
+  - **Tidy library** (see T2): one preview with two sections, tag changes then file moves. Enter applies retag first, then organize; esc cancels. When a moved file appears in a `.m3u8` in `<library>/Playlists/`, the preview warns and names those playlists ("playlists could be broken");
+  - **Edit tags** (`e`, exists): kept, limited to the fixed fields of T2;
+  - **Identify**: the selected album, or all albums without a release ID. Weak matches go to the Review screen;
+  - **Import**: asks for a folder path, shows a preview (duplicates skipped, where each album lands), then copies on confirm (or moves, if chosen).
+- **Dropped without replacement**, because the TUI already covers them or they go away: `tui`, `config path|show|init`, `preset list`, `singles`, `review`/`apply`/`skip`, `plugin list|enable|disable`, `search`, `download`, `queue`/`run`/`retry`/`clear`.
+- When done: CLAUDE.md (preview → `--apply` becomes preview → confirm in the TUI; layout without `internal/cli`) and README.
+
+## T2 — One fixed tag format ⏳
+Decided 2026-11-12.
+- **Presets are removed.** The field set is **fixed in code**: no setting, nothing to choose. `active_preset`, `presets` and `singles` leave the config format; on first load ymlib deletes those lines from an existing `config.yaml` (keeping the rest and the comments) and says so once. Every file gets: Title, Album, Artist, Artists, Album Artist, Date, Track Number, Disc Number, Genre, and the front cover embedded at a longest side of 600 px. Not written: Picture Back. `back.jpg` is no longer saved; a full-size `cover.jpg` is still kept in the album folder. Release and source IDs (MusicBrainz, Discogs, `YMLIB_SOURCE*`) are always written.
+- **Numbers:** track and disc are two digits and have **no totals** in any format. MP3 gets `TRCK=01`, `TPOS=01`; FLAC gets `TRACKNUMBER=01`, `DISCNUMBER=01`, with no `TRACKTOTAL`/`DISCTOTAL`. File names follow: `{disc?}` gives `02-01 - Title.flac`.
+- **Multi-disc** now means the album's tracks in the library have more than one distinct disc number, or any disc ≥ 2. Accepted miss: with only disc 1 of a 2-disc album, files are named `01 - …` until disc 2 arrives, and Tidy library then renames them.
+- **Guest artists:** Artist holds only the main artist; guests move into the title as `Title (feat. Guest)` (skipped if the title already has a feat.). Artists keeps everyone. The split comes from the providers' structured credits and happens only on feat./ft./featuring, never on `&` (`Simon & Garfunkel` stays one artist).
+- **ASCII text, always (no option):** `’ ‘` → `'`, `“ ”` → `"`, `– —` → `-`, `…` → `...`, in every text field from every provider.
+- **Grouped singles are removed:** the `singles` mode and command, the `YMLIB_ORIGINAL_ALBUM`/`_TRACK` tags, and the special handling in identify and duplicate checks. The database columns stay unused, with no new migration.
+- **Genre and cover fill:** when the chosen release has no genre or no front cover, the other providers are asked in config order. The value is taken only from a release that scores ≥ `metadata.min_score` against the files; otherwise the field stays empty.
+- **Tidy library** (replaces `retag` + `organize`) brings existing files to this format:
+  - removes managed tags outside the set (totals, embedded back cover);
+  - converts text to ASCII and moves guest artists into titles;
+  - restores grouped singles (original album and track number back, `YMLIB_ORIGINAL_*` removed);
+  - then moves files to their template paths.
+  - Unmanaged tags (ReplayGain, lyrics, comments, other pictures) are **kept**. Existing `back.jpg` files are left alone.
+- M4A tag writing stays postponed.
+
 ## S2 — Duplicate detection across sources ⏳
 Tune the matching tiers once real sources and Discogs data exist (Discogs rarely has ISRC/MBID, so tier 3 does more of the work).
 
-## S3 — YAML batch list ⏳
-```yaml
-prefer_remasters: false
-artists:
-  - name: Michael Jackson
-    prefer_remasters: true   # optional per-artist override
-    albums: [Bad, Off the Wall]
-    singles: [Some Single]
-```
-- Ranking: (1) title/artist match, (2) explicit over clean, (3) original vs. remaster per `prefer_remasters`, (4) quality (bit depth, then sample rate), (5) standard over deluxe. Ties or unclear results go to Needs Review.
-- Each entry ends up queued, already in library, or needs review, with a summary report.
+## S3 — Batch download list ⏳
+Redecided 2026-11-12. TUI only: a **Batch** screen.
+- Input is a YAML file you edit in your own editor; the screen asks for its path:
+  ```yaml
+  artists:
+    - name: Michael Jackson
+      albums: [Bad, Off the Wall]
+      singles: [Some Single]
+  ```
+- Each entry is sent to the plugins as written. **There is no ranking** (`prefer_remasters`, explicit/clean, quality and standard/deluxe rules are all dropped). The edition is whatever the name says: `Bad (Deluxe Edition)` asks for the deluxe.
+- The screen shows every result from every plugin per entry, and **you pick** one (or skip). ymlib never picks for you, even when there is only one result.
+- Entries whose album is already in the library are marked ✓ and left unpicked; you can still pick one.
+- A pick goes into the download queue at once. The queue keeps `plugin:id` as it does today, and nothing else is stored. Results you haven't picked from live only in memory. Reopening the file marks entries already queued or in the library as done and searches the rest again.
 
-## S4 — Artist playlists ⏳
-- `<library>/Playlists/Its <Artist>.m3u8`, relative paths, only for artists the user picks.
-- Order: album date → disc → track; singles placed by their own date. Regenerated automatically when that artist's files change.
+## S4 — `This is <Artist>` playlists ⏳
+Redecided 2026-11-13. The earlier plan (playlists for chosen artists, regenerated automatically) is dropped.
+- Playlists are the user's own. ymlib never edits them. Its only help is the Tidy library warning when moved files appear in one (T1).
+- **Generate:** a Library-screen action on the selected artist writes `<library>/Playlists/This is <Artist>.m3u8`, replacing the file if it exists.
+- **Contents:** every track whose Album Artist is that artist (albums, singles, EPs, …), ordered by release date → disc → track; releases with the same date by album title.
+- **Format:** extended M3U, UTF-8, a `#ymlib` comment line, then `#EXTM3U`-style entries: `#EXTINF:<seconds>,<Artist> - <Title>` followed by the path relative to the playlist, with `/`.
+- **No automatic updates.** After a download or import adds tracks by an artist that has a generated playlist, the status line says "New tracks by <Artist>. Regenerate the playlist in Library." Which artists have one is read from the files (a `This is <Artist>.m3u8` with the `#ymlib` line); nothing is stored in config or SQLite.
 
 ## S5 — Device sync ⏳
-Decided 2026-10-15 (answers in `ANSWERS.md`, "Sync update").
+Decided 2026-10-15.
 
 **Devices and storages**
 - A **storage** is one mounted volume, identified by its volume UUID (via `internal/platform`). A **device** is a named group of one or more storages, e.g. a player with internal memory and an SD card. An external SSD is simply a device with one storage.
@@ -189,6 +233,8 @@ Decided 2026-10-15 (answers in `ANSWERS.md`, "Sync update").
 - The plan works out the whole allocation and checks free space on every storage before anything is copied. This includes the space freed by deletions and moves, minus `reserve_mb`.
 - The preview shows, per storage, what will be copied, moved and deleted, the space used before and after, and a **"doesn't fit"** list of albums and artists with their sizes.
 - Albums are never copied partially.
+- `--apply` (in the TUI: confirm) syncs everything that fits and reports the rest as "doesn't fit" (decided 2026-11-12).
+- If S4 playlists exist: an artist split across storages gets one playlist per storage, with the same name, each listing that storage's tracks (decided 2026-11-12).
 
 **Partial connection**
 - When only some of a device's storages are mounted, each connected storage gets its own updates: changed and renamed files, plus deletions in `mirror` mode.
@@ -208,12 +254,7 @@ Decided 2026-10-15 (answers in `ANSWERS.md`, "Sync update").
 - Windows support via `internal/platform`.
 
 ## Open questions
-- M3: MusicBrainz uses typographic apostrophes (`Don’t Stop ’til`), and they are written as-is. Should titles be normalized to ASCII `'` (a config option)?
-- Grouped singles: the plan said "album date = earliest single", but a file has only one Date tag and each single keeps its own. Not implemented. Decide whether it's needed (e.g. an ORIGINALDATE-style tag) or drop it.
-- Grouped singles: when single folders merge, only the first `cover.jpg` moves and the others stay in their old folders (reported as conflicts). Decide whether to keep, delete or rename them (e.g. `cover-<title>.jpg`).
-- Genre/cover exception to whole-record matching (Q20) is still not implemented: with Discogs primary, genre is almost always present; covers are missing only when a provider has none. Decide whether it's still wanted.
-- S3: standard vs. deluxe default (Q22) and "playlists only for chosen artists" (Q24) were taken as the recommended defaults because the answers repeated the questions. Confirm both.
-- M4A tag writing was postponed in M2: an ffmpeg-based writer later, or a pure-Go library if one matures.
-- P3: check by hand against a plugin running in another process: `ymlib plugin add`, search, a ~250 MB download (memory stays flat), stop the plugin (downloads wait), start it (`ymlib queue run` completes).
-- S5: when the fit check finds music that doesn't fit, should `--apply` sync everything that does fit and report the rest (current assumption), or refuse until the plan fits completely?
-- S5: an artist split by album across two storages can't have one relative-path `.m3u8` playlist. Should it get one playlist per storage, or none?
+Resolved 2026-11-12 and moved into T1, T2, S3, S4 and S5: ASCII apostrophes, the grouped-singles date and covers, the genre/cover fill, standard vs. deluxe, playlists for chosen artists, M4A (stays postponed), and the two S5 questions. Resolved 2026-11-13: S4 playlists, guest artists, fixed field set, old config keys.
+
+- **Needs brainstorm:** what is stored where (config.yaml vs. SQLite vs. files).
+- P3: check by hand against a plugin running in another process: `ymlib plugin add`, search, a ~250 MB download (memory stays flat), stop the plugin (downloads wait), start it (`ymlib queue run` completes). After T1, do this in the TUI.

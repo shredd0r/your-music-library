@@ -237,7 +237,6 @@ Project docs:
 - [SPEC.md](SPEC.md): the original idea.
 - [PLAN-stage1.md](PLAN-stage1.md): design decisions.
 - [MILESTONES.md](MILESTONES.md): roadmap and status.
-- [ANSWERS.md](ANSWERS.md): answers from the design sessions.
 - [docs/plugin-protocol.md](docs/plugin-protocol.md): how to write a download plugin.
 - [CLAUDE.md](CLAUDE.md): conventions for AI-assisted development.
 

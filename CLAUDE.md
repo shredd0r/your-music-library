@@ -1,11 +1,10 @@
 # CLAUDE.md
 
-**ymlib** is a personal music library manager written in Go. It imports and downloads music (through source plugins: HTTP servers the user runs), writes tags according to user presets, organizes files with a path template, and has a CLI plus a Bubble Tea TUI. Artist playlists (S4) and device sync (S5) are planned.
+**ymlib** is a personal music library manager written in Go. It imports and downloads music (through source plugins: HTTP servers the user runs), writes tags according to user presets, organizes files with a path template, and has a CLI plus a Bubble Tea TUI. Planned (see MILESTONES.md): T1 makes ymlib TUI-only (the CLI is removed), T2 replaces presets with one fixed tag format, then batch downloads (S3) and device sync (S5), then `This is <Artist>` playlists (S4).
 
 ## Start here
 - `MILESTONES.md`: roadmap, status of each milestone, open questions. **Read it first, and update its status table and sections when a milestone (or part of one) is finished.**
 - `PLAN-stage1.md`: settled design decisions for Stage 1 (MVP).
-- `ANSWERS.md`: the user's raw answers from the design session; check it before re-asking a settled question.
 - `SPEC.md`: the original idea.
 
 ## Commands
