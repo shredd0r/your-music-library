@@ -9,7 +9,6 @@ import (
 	"sort"
 	"testing"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/tags"
 	"your-music-library/internal/testutil"
@@ -61,7 +60,7 @@ func TestIngestIdentifiesCopiesAndSkipsDuplicates(t *testing.T) {
 	}
 
 	cover := testutil.JPEG(t, 900, 900, color.White)
-	r, err := l.ApplyIngest(ctx, plan, config.Default().Presets["full"], fakeImages{data: cover}, opts)
+	r, err := l.ApplyIngest(ctx, plan, fakeImages{data: cover}, opts)
 	if err != nil || len(r.Imported) != 2 || len(r.Failed) != 0 {
 		t.Fatalf("apply = %+v %v", r, err)
 	}
@@ -105,7 +104,7 @@ func TestIngestMoveWithoutLookup(t *testing.T) {
 	if err != nil || len(plan.Items) != 1 || plan.Items[0].Target != "Someone/Record/04 - Song.flac" {
 		t.Fatalf("plan = %+v %v", plan, err)
 	}
-	if _, err := l.ApplyIngest(ctx, plan, config.Default().Presets["full"], nil, opts); err != nil {
+	if _, err := l.ApplyIngest(ctx, plan, nil, opts); err != nil {
 		t.Fatal(err)
 	}
 	if exists(files[0]) || !exists(l.abs("Someone/Record/04 - Song.flac")) {
@@ -140,7 +139,7 @@ func TestIngestReviewConflictsAndFailures(t *testing.T) {
 	if len(plan.Unsupported) != 1 || len(plan.Failed) != 1 || len(plan.Conflicts) != 1 || len(plan.Reviews) == 0 {
 		t.Fatalf("plan = %+v", plan)
 	}
-	r, err := l.ApplyIngest(ctx, plan, config.Default().Presets["full"], nil, opts)
+	r, err := l.ApplyIngest(ctx, plan, nil, opts)
 	if err != nil || len(r.Imported) != 2 {
 		t.Fatalf("apply = %+v %v", r, err)
 	}

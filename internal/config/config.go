@@ -1,5 +1,5 @@
-// Package config loads and validates config.yaml: library location,
-// metadata presets, path template, singles mode, queue and cache settings.
+// Package config loads and validates config.yaml: library location, path
+// template, metadata providers, queue, cache and plugin settings.
 package config
 
 import (
@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,17 +21,6 @@ import (
 // DefaultPathTemplate places files under the album artist folder.
 // Template syntax is defined by package pathtmpl.
 const DefaultPathTemplate = "{albumartist}/{album}/{disc?}{track:02} - {title}.{ext}"
-
-// SinglesMode controls how single releases are stored.
-type SinglesMode string
-
-const (
-	// SinglesAsAlbum stores each single as its own one-track album.
-	SinglesAsAlbum SinglesMode = "as-album"
-	// SinglesGrouped collects an artist's singles into "<Artist> Singles",
-	// numbered by release date.
-	SinglesGrouped SinglesMode = "grouped"
-)
 
 // KnownProviders are the metadata providers this build supports.
 var KnownProviders = []string{"discogs", "musicbrainz"}
@@ -88,63 +76,40 @@ func ValidatePlugin(name, rawURL string) error {
 // Config is the effective configuration: defaults merged with the user file.
 type Config struct {
 	LibraryPath  string
-	ActivePreset string
 	PathTemplate string
-	Singles      SinglesMode
 	Providers    []string
 	Queue        QueueConfig
 	Cache        CacheConfig
 	Metadata     MetadataConfig
 	Plugins      PluginsConfig
-	// Presets holds built-in and user presets; user presets with the same
-	// name replace built-ins.
-	Presets map[string]Preset
+
+	// Removed lists deprecated keys that Load deleted from the file
+	// (see deprecatedKeys), so the UI can say so once. Usually nil.
+	Removed []string
 }
 
 // Default returns the configuration used when no file exists.
 func Default() Config {
 	return Config{
 		LibraryPath:  "~/Music/ymlib",
-		ActivePreset: "full",
 		PathTemplate: DefaultPathTemplate,
-		Singles:      SinglesAsAlbum,
 		Providers:    slices.Clone(KnownProviders),
 		Queue:        QueueConfig{Parallel: 2},
 		Cache:        CacheConfig{MaxAgeDays: 180},
 		Metadata:     MetadataConfig{MinScore: 0.85},
 		Plugins:      PluginsConfig{OfflineWaitMinutes: 60},
-		Presets:      builtinPresets(),
 	}
-}
-
-// Preset looks up a preset by name.
-func (c Config) Preset(name string) (Preset, bool) {
-	p, ok := c.Presets[name]
-	return p, ok
-}
-
-// PresetNames returns preset names sorted alphabetically.
-func (c Config) PresetNames() []string {
-	names := make([]string, 0, len(c.Presets))
-	for n := range c.Presets {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // fileConfig mirrors config.yaml. Pointers distinguish "unset" from zero.
 type fileConfig struct {
-	LibraryPath  *string               `yaml:"library_path,omitempty"`
-	ActivePreset *string               `yaml:"active_preset,omitempty"`
-	PathTemplate *string               `yaml:"path_template,omitempty"`
-	Singles      *string               `yaml:"singles,omitempty"`
-	Providers    *[]string             `yaml:"providers,omitempty"`
-	Queue        *QueueConfig          `yaml:"queue,omitempty"`
-	Cache        *CacheConfig          `yaml:"cache,omitempty"`
-	Metadata     *MetadataConfig       `yaml:"metadata,omitempty"`
-	Plugins      *filePlugins          `yaml:"plugins,omitempty"`
-	Presets      map[string]filePreset `yaml:"presets,omitempty"`
+	LibraryPath  *string         `yaml:"library_path,omitempty"`
+	PathTemplate *string         `yaml:"path_template,omitempty"`
+	Providers    *[]string       `yaml:"providers,omitempty"`
+	Queue        *QueueConfig    `yaml:"queue,omitempty"`
+	Cache        *CacheConfig    `yaml:"cache,omitempty"`
+	Metadata     *MetadataConfig `yaml:"metadata,omitempty"`
+	Plugins      *filePlugins    `yaml:"plugins,omitempty"`
 }
 
 // filePlugins merges key by key, so setting one key keeps the other's default.
@@ -153,13 +118,9 @@ type filePlugins struct {
 	Registered         map[string]PluginEntry `yaml:"registered,omitempty"`
 }
 
-type filePreset struct {
-	Fields     []string `yaml:"fields"`
-	CoverMaxPx int      `yaml:"cover_max_px,omitempty"`
-}
-
 // Load reads path and merges it over Default. A missing file is not an
-// error: the defaults are returned.
+// error: the defaults are returned. Deprecated keys are deleted from the
+// file (comments and other settings are kept) and listed in Removed.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -168,11 +129,63 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if removed := deprecatedIn(&doc); len(removed) > 0 {
+		c, err := editFile(path, func(root *yaml.Node) error {
+			dropKeys(root, removed)
+			return nil
+		})
+		c.Removed = removed
+		return c, err
+	}
 	c, err := Parse(data)
 	if err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return c, nil
+}
+
+// deprecatedKeys were settings of earlier versions that no longer mean
+// anything: presets (the tag format is fixed) and the singles mode.
+// Parse ignores them and Load deletes them from the file.
+var deprecatedKeys = []string{"active_preset", "singles", "presets"}
+
+// deprecatedIn lists the deprecated top-level keys in doc, in file order.
+func deprecatedIn(doc *yaml.Node) []string {
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil
+	}
+	var out []string
+	m := doc.Content[0]
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if slices.Contains(deprecatedKeys, m.Content[i].Value) {
+			out = append(out, m.Content[i].Value)
+		}
+	}
+	return out
+}
+
+// dropKeys removes keys from mapping m. The comment above the first key
+// is usually the file's header, so it moves to the next key that stays.
+func dropKeys(m *yaml.Node, keys []string) {
+	var header string
+	for i := 0; i+1 < len(m.Content); {
+		k := m.Content[i]
+		if slices.Contains(keys, k.Value) {
+			if i == 0 && header == "" {
+				header = k.HeadComment
+			}
+			m.Content = append(m.Content[:i], m.Content[i+2:]...)
+			continue
+		}
+		if i == 0 && header != "" {
+			k.HeadComment = strings.TrimSpace(header + "\n" + k.HeadComment)
+		}
+		i += 2
+	}
 }
 
 // removedKeys were settings of earlier versions; they get a hint instead
@@ -195,6 +208,13 @@ func Parse(data []byte) (Config, error) {
 				return Config{}, fmt.Errorf("line %d: %s", m.Content[i].Line, hint)
 			}
 		}
+		if old := deprecatedIn(&doc); len(old) > 0 {
+			dropKeys(m, old)
+			var err error
+			if data, err = yaml.Marshal(&doc); err != nil {
+				return Config{}, err
+			}
+		}
 	}
 	var fc fileConfig
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -207,14 +227,8 @@ func Parse(data []byte) (Config, error) {
 	if fc.LibraryPath != nil {
 		c.LibraryPath = *fc.LibraryPath
 	}
-	if fc.ActivePreset != nil {
-		c.ActivePreset = *fc.ActivePreset
-	}
 	if fc.PathTemplate != nil {
 		c.PathTemplate = *fc.PathTemplate
-	}
-	if fc.Singles != nil {
-		c.Singles = SinglesMode(*fc.Singles)
 	}
 	if fc.Providers != nil {
 		c.Providers = *fc.Providers
@@ -234,35 +248,7 @@ func Parse(data []byte) (Config, error) {
 		}
 		c.Plugins.Registered = fc.Plugins.Registered
 	}
-	for name, fp := range fc.Presets {
-		p, err := fp.toPreset(name)
-		if err != nil {
-			return Config{}, err
-		}
-		c.Presets[name] = p
-	}
 	return c, c.Validate()
-}
-
-func (fp filePreset) toPreset(name string) (Preset, error) {
-	if len(fp.Fields) == 0 {
-		return Preset{}, fmt.Errorf("preset %q: no fields", name)
-	}
-	if fp.CoverMaxPx < 0 {
-		return Preset{}, fmt.Errorf("preset %q: cover_max_px must be >= 0", name)
-	}
-	p := Preset{Name: name, CoverMaxPx: fp.CoverMaxPx}
-	for _, s := range fp.Fields {
-		f, err := ParseField(s)
-		if err != nil {
-			return Preset{}, fmt.Errorf("preset %q: %w", name, err)
-		}
-		if p.Has(f) {
-			return Preset{}, fmt.Errorf("preset %q: field %q listed twice", name, f)
-		}
-		p.Fields = append(p.Fields, f)
-	}
-	return p, nil
 }
 
 // Validate checks cross-field rules.
@@ -271,14 +257,8 @@ func (c Config) Validate() error {
 	if c.LibraryPath == "" {
 		errs = append(errs, errors.New("library_path must not be empty"))
 	}
-	if _, ok := c.Presets[c.ActivePreset]; !ok {
-		errs = append(errs, fmt.Errorf("active_preset %q does not exist", c.ActivePreset))
-	}
 	if _, err := pathtmpl.Parse(c.PathTemplate); err != nil {
 		errs = append(errs, err)
-	}
-	if c.Singles != SinglesAsAlbum && c.Singles != SinglesGrouped {
-		errs = append(errs, fmt.Errorf("singles must be %q or %q, got %q", SinglesAsAlbum, SinglesGrouped, c.Singles))
 	}
 	if len(c.Providers) == 0 {
 		errs = append(errs, errors.New("providers must list at least one provider"))
@@ -308,33 +288,16 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// Marshal renders the config as YAML. Built-in presets are omitted unless
-// the user overrode them, so the output stays short and editable.
+// Marshal renders the config as YAML.
 func (c Config) Marshal() ([]byte, error) {
-	singles := string(c.Singles)
 	fc := fileConfig{
 		LibraryPath:  &c.LibraryPath,
-		ActivePreset: &c.ActivePreset,
 		PathTemplate: &c.PathTemplate,
-		Singles:      &singles,
 		Providers:    &c.Providers,
 		Queue:        &c.Queue,
 		Cache:        &c.Cache,
 		Metadata:     &c.Metadata,
 		Plugins:      &filePlugins{OfflineWaitMinutes: &c.Plugins.OfflineWaitMinutes, Registered: c.Plugins.Registered},
-	}
-	for name, p := range c.Presets {
-		if p.Builtin {
-			continue
-		}
-		if fc.Presets == nil {
-			fc.Presets = map[string]filePreset{}
-		}
-		fp := filePreset{CoverMaxPx: p.CoverMaxPx}
-		for _, f := range p.Fields {
-			fp.Fields = append(fp.Fields, string(f))
-		}
-		fc.Presets[name] = fp
 	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

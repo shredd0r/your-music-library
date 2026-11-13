@@ -137,11 +137,6 @@ func (s *shared) pluginNote(name string) string {
 	return "error: " + st.Err.Error()
 }
 
-func (s *shared) preset() config.Preset {
-	p, _ := s.cfg.Preset(s.cfg.ActivePreset)
-	return p
-}
-
 const maxLog = 200
 
 // startDownloads runs the queue in the background unless it is running.
@@ -154,7 +149,7 @@ func (s *shared) startDownloads() tea.Cmd {
 	events := make(chan tea.Msg, 64)
 	r := &download.Runner{
 		Queue: s.d.Queue, Sources: s.sources, Lib: s.d.Lib,
-		Identifier: s.d.Identifier, Images: s.d.Images, Preset: s.preset(),
+		Identifier: s.d.Identifier, Images: s.d.Images,
 		Parallel: s.cfg.Queue.Parallel, Verify: s.d.Verify, Backoff: s.d.Backoff,
 		OfflineWait: time.Duration(s.cfg.Plugins.OfflineWaitMinutes) * time.Minute,
 		Log:         func(format string, args ...any) { events <- runnerLogMsg(fmt.Sprintf(format, args...)) },
@@ -250,6 +245,10 @@ func New(ctx context.Context, d Deps) *App {
 // Init loads every screen's data.
 func (a *App) Init() tea.Cmd {
 	cmds := []tea.Cmd{loadQueue(a.s), checkPlugins(a.s), a.s.pluginTick()}
+	if r := a.s.cfg.Removed; len(r) > 0 {
+		cmds = append(cmds, status("removed %s from %s: presets and the singles mode no longer exist",
+			strings.Join(r, ", "), a.s.d.ConfigPath))
+	}
 	for _, sc := range a.screens {
 		cmds = append(cmds, sc.init())
 	}

@@ -1,11 +1,11 @@
 package library
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/tags"
 )
 
@@ -13,9 +13,9 @@ import (
 type RetagItem struct {
 	Path    string
 	Changes []tags.Change
-	// SaveImages are album-folder images (e.g. "cover.jpg") written from
-	// the embedded picture before it is shrunk or removed, so the full-size
-	// image is never lost.
+	// SaveImages are album-folder images ("cover.jpg") written from the
+	// embedded front cover before it is shrunk, so the full-size image is
+	// never lost.
 	SaveImages []string
 }
 
@@ -26,15 +26,18 @@ type RetagPlan struct {
 	Failed    []FileError
 }
 
-// PlanRetag reads every indexed file and lists the changes that applying
-// preset would make. It changes nothing.
-func (l *Library) PlanRetag(ctx context.Context, preset config.Preset) (RetagPlan, error) {
+// PlanRetag reads every indexed file and lists the changes that bringing
+// it to the fixed tag format (tags.Format) would make: totals and back
+// covers removed, ASCII text, guests moved into titles, grouped singles
+// restored, numbers padded. Tags ymlib doesn't manage are kept. It
+// changes nothing.
+func (l *Library) PlanRetag(ctx context.Context) (RetagPlan, error) {
 	var plan RetagPlan
 	es, err := l.Entries(ctx)
 	if err != nil {
 		return plan, err
 	}
-	saving := map[string]bool{} // folder image already planned
+	saving := map[string]bool{} // album folders whose cover.jpg is already planned
 	for _, e := range es {
 		if err := ctx.Err(); err != nil {
 			return plan, err
@@ -44,62 +47,55 @@ func (l *Library) PlanRetag(ctx context.Context, preset config.Preset) (RetagPla
 			plan.Failed = append(plan.Failed, FileError{e.Path, err})
 			continue
 		}
-		want, err := tags.ApplyPreset(cur, preset)
+		want, err := tags.Format(cur)
 		if err != nil {
 			plan.Failed = append(plan.Failed, FileError{e.Path, err})
 			continue
 		}
 		changes := tags.Diff(cur, want)
-		if c, ok := l.trackNumberFormatChange(e.Path, cur, want, changes); ok {
-			changes = append(changes, c)
-		}
+		changes = append(changes, l.numberFormatChanges(e.Path, want, changes)...)
 		if len(changes) == 0 {
 			plan.Unchanged++
 			continue
 		}
 		item := RetagItem{Path: e.Path, Changes: changes}
 		dir := path.Dir(e.Path)
-		for _, pic := range []struct {
-			old, new *tags.Picture
-			base     string
-		}{{cur.Cover, want.Cover, "cover"}, {cur.Back, want.Back, "back"}} {
-			if pic.old == nil || (pic.new != nil && string(pic.new.Data) == string(pic.old.Data)) {
-				continue
-			}
-			name := pic.base + imageExt(pic.old.MIME)
-			if saving[path.Join(dir, pic.base)] || l.hasFolderImage(dir, pic.base) {
-				continue
-			}
-			saving[path.Join(dir, pic.base)] = true
-			item.SaveImages = append(item.SaveImages, name)
+		if shrunk := cur.Cover != nil && !bytes.Equal(cur.Cover.Data, want.Cover.Data); shrunk &&
+			!saving[dir] && !l.hasFolderImage(dir, "cover") {
+			saving[dir] = true
+			item.SaveImages = append(item.SaveImages, "cover"+imageExt(cur.Cover.MIME))
 		}
 		plan.Items = append(plan.Items, item)
 	}
 	return plan, nil
 }
 
-// trackNumberFormatChange reports a file whose track number is right but
-// stored in another format ("1" or "3/12" instead of "01"). Diff cannot see
+// numberFormatChanges reports track and disc numbers that are right but
+// stored in another form ("1" or "3/12" instead of "01"). Diff cannot see
 // this because Read parses both forms into the same numbers.
-func (l *Library) trackNumberFormatChange(rel string, cur, want tags.Track, changes []tags.Change) (tags.Change, bool) {
-	if want.TrackNumber == 0 || cur.TrackNumber != want.TrackNumber {
-		return tags.Change{}, false
-	}
+func (l *Library) numberFormatChanges(rel string, want tags.Track, changes []tags.Change) []tags.Change {
+	listed := map[tags.Field]bool{}
 	for _, c := range changes {
-		if c.Field == config.FieldTrackNumber {
-			return tags.Change{}, false
+		listed[c.Field] = true
+	}
+	track, disc, err := tags.StoredNumbers(l.abs(rel))
+	if err != nil {
+		return nil
+	}
+	var out []tags.Change
+	for _, n := range []struct {
+		field  tags.Field
+		stored string
+		want   int
+	}{{tags.FieldTrackNumber, track, want.TrackNumber}, {tags.FieldDiscNumber, disc, want.DiscNumber}} {
+		if n.want == 0 || listed[n.field] {
+			continue
+		}
+		if padded := tags.PadNumber(n.want); n.stored != padded {
+			out = append(out, tags.Change{Field: n.field, Old: n.stored, New: padded})
 		}
 	}
-	abs := l.abs(rel)
-	stored, err := tags.StoredTrackNumber(abs)
-	if err != nil {
-		return tags.Change{}, false
-	}
-	canonical, err := tags.CanonicalTrackNumber(abs, want)
-	if err != nil || stored == canonical {
-		return tags.Change{}, false
-	}
-	return tags.Change{Field: config.FieldTrackNumber, Old: stored, New: canonical}, true
+	return out
 }
 
 func imageExt(mime string) string {
@@ -113,14 +109,14 @@ func (l *Library) hasFolderImage(dir, base string) bool {
 	return exists(l.abs(path.Join(dir, base+".jpg"))) || exists(l.abs(path.Join(dir, base+".png")))
 }
 
-// ApplyRetag writes the preset to every file in plan.
-func (l *Library) ApplyRetag(ctx context.Context, plan RetagPlan, preset config.Preset) (ApplyReport, error) {
+// ApplyRetag brings every file in plan to the fixed tag format.
+func (l *Library) ApplyRetag(ctx context.Context, plan RetagPlan) (ApplyReport, error) {
 	var r ApplyReport
 	for _, item := range plan.Items {
 		if err := ctx.Err(); err != nil {
 			return r, err
 		}
-		if err := l.retagOne(ctx, item, preset); err != nil {
+		if err := l.retagOne(ctx, item); err != nil {
 			r.Failed = append(r.Failed, FileError{item.Path, err})
 			continue
 		}
@@ -129,26 +125,22 @@ func (l *Library) ApplyRetag(ctx context.Context, plan RetagPlan, preset config.
 	return r, nil
 }
 
-func (l *Library) retagOne(ctx context.Context, item RetagItem, preset config.Preset) error {
+func (l *Library) retagOne(ctx context.Context, item RetagItem) error {
 	abs := l.abs(item.Path)
 	cur, err := tags.Read(abs)
 	if err != nil {
 		return err
 	}
 	for _, name := range item.SaveImages {
-		pic := cur.Cover
-		if name[:4] == "back" {
-			pic = cur.Back
-		}
 		dst := l.abs(path.Join(path.Dir(item.Path), name))
-		if pic == nil || exists(dst) {
+		if cur.Cover == nil || exists(dst) {
 			continue
 		}
-		if err := os.WriteFile(dst, pic.Data, 0o644); err != nil {
+		if err := os.WriteFile(dst, cur.Cover.Data, 0o644); err != nil {
 			return err
 		}
 	}
-	want, err := tags.ApplyPreset(cur, preset)
+	want, err := tags.Format(cur)
 	if err != nil {
 		return err
 	}

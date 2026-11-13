@@ -10,20 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SetActivePreset changes active_preset in the config file at path and
-// returns the new config. Only that key changes; comments and the rest of
-// the file are kept. A missing file is created with just this key. The
-// result is validated before it is written.
-func SetActivePreset(path, name string) (Config, error) {
-	return editFile(path, func(root *yaml.Node) error {
-		setKey(root, "active_preset", name)
-		return nil
-	})
-}
-
 // AddPlugin registers plugin name at url, enabled, in the config file at
-// path (kept like SetActivePreset does). A name that is already
-// registered is an error.
+// path. Only that entry changes; comments and the rest of the file are
+// kept, and a missing file is created. A name that is already registered
+// is an error.
 func AddPlugin(path, name, url string) (Config, error) {
 	if err := ValidatePlugin(name, url); err != nil {
 		return Config{}, err

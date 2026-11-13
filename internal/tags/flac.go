@@ -222,10 +222,8 @@ func buildFLAC(path, tmp string, t Track) (err error) {
 	}
 	add(vcAlbumArtist, t.AlbumArtist)
 	add(vcDate, t.Date)
-	add(vcTrackNumber, padTrack(t.TrackNumber))
-	add(vcTrackTotal, itoaOrEmpty(t.TrackTotal))
-	add(vcDiscNumber, itoaOrEmpty(t.DiscNumber))
-	add(vcDiscTotal, itoaOrEmpty(t.DiscTotal))
+	add(vcTrackNumber, PadNumber(t.TrackNumber))
+	add(vcDiscNumber, PadNumber(t.DiscNumber))
 	add(vcGenre, t.Genre)
 	add(vcReleaseType, t.ReleaseType)
 	add(vcISRC, t.IDs.ISRC)
@@ -234,19 +232,11 @@ func buildFLAC(path, tmp string, t Track) (err error) {
 	add(vcDiscogs, t.IDs.DiscogsReleaseID)
 	add(vcSource, t.IDs.Source)
 	add(vcSourceTrackID, t.IDs.SourceTrackID)
-	add(vcOrigAlbum, t.OriginalAlbum)
-	add(vcOrigTrack, itoaOrEmpty(t.OriginalTrack))
 
 	cb := comment.Marshal()
 	meta = append(meta, &cb)
-	for _, p := range []struct {
-		pic *Picture
-		typ flacpicture.PictureType
-	}{{t.Cover, flacpicture.PictureTypeFrontCover}, {t.Back, flacpicture.PictureTypeBackCover}} {
-		if p.pic == nil {
-			continue
-		}
-		block, err := flacpicture.NewFromImageData(p.typ, "", p.pic.Data, p.pic.MIME)
+	if t.Cover != nil {
+		block, err := flacpicture.NewFromImageData(flacpicture.PictureTypeFrontCover, "", t.Cover.Data, t.Cover.MIME)
 		if err != nil {
 			return err
 		}
@@ -257,10 +247,10 @@ func buildFLAC(path, tmp string, t Track) (err error) {
 	return f.Save(tmp)
 }
 
-func (flacCodec) storedTrackNumber(path string) (_ string, err error) {
+func (flacCodec) storedNumbers(path string) (track, disc string, err error) {
 	f, err := flac.ParseFile(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer cleanup.Close(&err, f)
 	for _, b := range f.Meta {
@@ -269,15 +259,17 @@ func (flacCodec) storedTrackNumber(path string) (_ string, err error) {
 		}
 		c, err := flacvorbis.ParseFromMetaDataBlock(*b)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		for _, kv := range c.Comments {
-			if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, vcTrackNumber) {
-				return v, nil
+			k, v, _ := strings.Cut(kv, "=")
+			switch {
+			case strings.EqualFold(k, vcTrackNumber) && track == "":
+				track = v
+			case strings.EqualFold(k, vcDiscNumber) && disc == "":
+				disc = v
 			}
 		}
 	}
-	return "", nil
+	return track, disc, nil
 }
-
-func (flacCodec) canonicalTrackNumber(t Track) string { return padTrack(t.TrackNumber) }

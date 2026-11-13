@@ -21,12 +21,6 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.ActivePreset != "full" {
-		t.Errorf("ActivePreset = %q", c.ActivePreset)
-	}
-	if c.Singles != SinglesAsAlbum {
-		t.Errorf("Singles = %q", c.Singles)
-	}
 	if c.Queue.Parallel != 2 {
 		t.Errorf("Queue.Parallel = %d", c.Queue.Parallel)
 	}
@@ -44,34 +38,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	}
 }
 
-func TestBuiltinPresets(t *testing.T) {
-	c := Default()
-	full, ok := c.Preset("full")
-	if !ok || len(full.Fields) != len(AllFields) || full.CoverMaxPx != 600 {
-		t.Fatalf("full preset wrong: %+v", full)
-	}
-	mp3, ok := c.Preset("mp3-player")
-	if !ok {
-		t.Fatal("mp3-player missing")
-	}
-	if mp3.CoverMaxPx != 600 {
-		t.Errorf("mp3-player cover = %d", mp3.CoverMaxPx)
-	}
-	if mp3.Has(FieldArtists) || mp3.Has(FieldPictureBack) {
-		t.Errorf("mp3-player should not include Artists or Picture Back: %v", mp3.Fields)
-	}
-	for _, f := range []Field{FieldTitle, FieldAlbum, FieldArtist, FieldAlbumArtist, FieldDate, FieldTrackNumber, FieldDiscNumber, FieldGenre, FieldPictureCover} {
-		if !mp3.Has(f) {
-			t.Errorf("mp3-player missing %s", f)
-		}
-	}
-}
-
 func TestLoadUserConfig(t *testing.T) {
 	p := writeFile(t, `
 library_path: /music
-active_preset: car
-singles: grouped
 queue:
   parallel: 4
 cache:
@@ -80,28 +49,17 @@ providers: [musicbrainz]
 plugins:
   registered:
     shelf: {url: "http://127.0.0.1:8765", enabled: true}
-presets:
-  car:
-    fields: [Title, Artist, "Track Number", "Picture Cover"]
-    cover_max_px: 300
 `)
 	c, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.LibraryPath != "/music" || c.Singles != SinglesGrouped || c.Queue.Parallel != 4 || c.Cache.MaxAgeDays != 30 {
+	if c.LibraryPath != "/music" || c.Queue.Parallel != 4 || c.Cache.MaxAgeDays != 30 {
 		t.Errorf("unexpected config: %+v", c)
 	}
 	// one key of a section set: the other keeps its default
 	if c.Plugins.OfflineWaitMinutes != 60 || c.Plugins.Registered["shelf"] != (PluginEntry{URL: "http://127.0.0.1:8765", Enabled: true}) {
 		t.Errorf("Plugins = %+v", c.Plugins)
-	}
-	car, ok := c.Preset("car")
-	if !ok || len(car.Fields) != 4 || car.CoverMaxPx != 300 {
-		t.Fatalf("car preset wrong: %+v", car)
-	}
-	if _, ok := c.Preset("full"); !ok {
-		t.Error("built-in presets must remain available next to user presets")
 	}
 	// unset keys keep defaults
 	if c.PathTemplate != DefaultPathTemplate {
@@ -109,27 +67,8 @@ presets:
 	}
 }
 
-func TestUserPresetOverridesBuiltin(t *testing.T) {
-	c, err := Load(writeFile(t, `
-presets:
-  mp3-player:
-    fields: [Title]
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, _ := c.Preset("mp3-player")
-	if len(p.Fields) != 1 || p.Builtin {
-		t.Errorf("override not applied: %+v", p)
-	}
-}
-
 func TestValidationErrors(t *testing.T) {
 	cases := map[string]string{
-		"unknown field":    "presets:\n  x:\n    fields: [Title, Mood]\n",
-		"empty preset":     "presets:\n  x:\n    fields: []\n",
-		"unknown active":   "active_preset: nope\n",
-		"bad singles":      "singles: sometimes\n",
 		"bad parallel":     "queue:\n  parallel: 0\n",
 		"bad cache age":    "cache:\n  max_age_days: -1\n",
 		"bad offline wait": "plugins:\n  offline_wait_minutes: 0\n",
@@ -141,11 +80,9 @@ func TestValidationErrors(t *testing.T) {
 		"zero min score":   "metadata:\n  min_score: 0\n",
 		"bad provider":     "providers: [discogs, napster]\n",
 		"no providers":     "providers: []\n",
-		"negative cover":   "presets:\n  x:\n    fields: [Title]\n    cover_max_px: -5\n",
 		"empty template":   "path_template: \"\"\n",
 		"bad template":     "path_template: \"{album}/{nope}.{ext}\"\n",
 		"unknown key":      "libary_path: /typo\n",
-		"duplicate field":  "presets:\n  x:\n    fields: [Title, Title]\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -153,15 +90,6 @@ func TestValidationErrors(t *testing.T) {
 				t.Errorf("expected error for %s", name)
 			}
 		})
-	}
-}
-
-func TestParseFieldIsCaseAndSpaceInsensitive(t *testing.T) {
-	for _, s := range []string{"Track Number", "track number", "TRACK_NUMBER", "track-number", "tracknumber"} {
-		f, err := ParseField(s)
-		if err != nil || f != FieldTrackNumber {
-			t.Errorf("ParseField(%q) = %v, %v", s, f, err)
-		}
 	}
 }
 
@@ -176,7 +104,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reloading marshalled config: %v\n%s", err, out)
 	}
-	if c2.LibraryPath != "/music" || c2.ActivePreset != c.ActivePreset {
+	if c2.LibraryPath != "/music" || c2.PathTemplate != c.PathTemplate {
 		t.Errorf("round trip lost data: %+v", c2)
 	}
 }
@@ -187,5 +115,60 @@ func TestRemovedKeysHint(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "ymlib plugin add") {
 			t.Errorf("%q: %v", data, err)
 		}
+	}
+}
+
+func TestLoadRemovesDeprecatedKeys(t *testing.T) {
+	p := writeFile(t, `# my settings
+library_path: /music # where music lives
+active_preset: car
+singles: grouped
+presets:
+  car:
+    fields: [Title, Artist]
+queue:
+  parallel: 4
+`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"active_preset", "singles", "presets"}; strings.Join(c.Removed, ",") != strings.Join(want, ",") {
+		t.Errorf("Removed = %v, want %v", c.Removed, want)
+	}
+	if c.LibraryPath != "/music" || c.Queue.Parallel != 4 {
+		t.Errorf("other settings lost: %+v", c)
+	}
+	data, _ := os.ReadFile(p)
+	for _, gone := range []string{"active_preset", "singles", "presets", "car", "fields"} {
+		if strings.Contains(string(data), gone) {
+			t.Errorf("file still has %q:\n%s", gone, data)
+		}
+	}
+	for _, kept := range []string{"# my settings", "# where music lives", "parallel: 4"} {
+		if !strings.Contains(string(data), kept) {
+			t.Errorf("file lost %q:\n%s", kept, data)
+		}
+	}
+	if c2, err := Load(p); err != nil || c2.Removed != nil {
+		t.Errorf("second load: %v, Removed = %v", err, c2.Removed)
+	}
+}
+
+func TestLoadKeepsHeaderAboveRemovedKey(t *testing.T) {
+	p := writeFile(t, "# ymlib settings\nactive_preset: full\n# where music lives\nlibrary_path: /music\n")
+	if _, err := Load(p); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.HasPrefix(string(data), "# ymlib settings\n# where music lives\nlibrary_path: /music") {
+		t.Errorf("file:\n%s", data)
+	}
+}
+
+func TestParseIgnoresDeprecatedKeys(t *testing.T) {
+	c, err := Parse([]byte("active_preset: nope\nsingles: sometimes\npresets: {x: {fields: [Mood]}}\n"))
+	if err != nil || c.Removed != nil {
+		t.Errorf("Parse = %+v, %v", c, err)
 	}
 }

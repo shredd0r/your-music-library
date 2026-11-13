@@ -37,9 +37,10 @@ func normalize(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// editionNoise matches version suffixes that should not count against a
-// match: "(Remastered 2009)", "- 2011 Remaster", "[Deluxe Edition]".
-var editionNoise = regexp.MustCompile(`(?i)\s*([(\[][^)\]]*(remaster|deluxe|edition|version|mono|stereo|bonus|expanded|anniversary)[^)\]]*[)\]]|\s-\s.*(remaster|version|edit).*)$`)
+// editionNoise matches version suffixes and guest credits that should not
+// count against a match: "(Remastered 2009)", "- 2011 Remaster",
+// "[Deluxe Edition]", "(feat. Siedah Garrett)".
+var editionNoise = regexp.MustCompile(`(?i)\s*([(\[][^)\]]*(remaster|deluxe|edition|version|mono|stereo|bonus|expanded|anniversary|\bfeat\b|\bft\.|\bfeaturing\b)[^)\]]*[)\]]|\s-\s.*(remaster|version|edit).*)$`)
 
 // similarity returns 0..1; 1 means equal after normalization.
 func similarity(a, b string) float64 {

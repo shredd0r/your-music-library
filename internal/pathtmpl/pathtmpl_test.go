@@ -26,7 +26,7 @@ func TestRenderDefault(t *testing.T) {
 		{"single disc", Values{AlbumArtist: "Michael Jackson", Album: "Bad", Track: 3, Title: "Speed Demon", Ext: "flac"},
 			"Michael Jackson/Bad/03 - Speed Demon.flac"},
 		{"multi disc", Values{AlbumArtist: "Pink Floyd", Album: "The Wall", Disc: 2, DiscTotal: 2, Track: 1, Title: "Hey You", Ext: "mp3"},
-			"Pink Floyd/The Wall/2-01 - Hey You.mp3"},
+			"Pink Floyd/The Wall/02-01 - Hey You.mp3"},
 		{"falls back to artist", Values{Artist: "Prince", Album: "1999", Track: 1, Title: "1999", Ext: "flac"},
 			"Prince/1999/01 - 1999.flac"},
 		{"unknowns", Values{Ext: "flac"},

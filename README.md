@@ -8,13 +8,12 @@ A command-line and terminal tool for keeping a local music collection clean: it 
 
 | Feature | Command |
 |---|---|
-| Terminal UI: search and download, queue, library browser with covers and tag editing, review, presets | `ymlib` |
+| Terminal UI: search and download, queue, library browser with covers and tag editing, review, settings | `ymlib` |
 | Index your music folder (reads tags only, changes nothing) | `ymlib scan` |
 | Identify albums on Discogs/MusicBrainz and write tags and covers | `ymlib identify` |
 | Choose a release by hand when a match isn't certain | `ymlib review` |
-| Apply a metadata preset, e.g. slim tags and small covers for MP3 players | `ymlib retag` |
+| Bring existing files to the fixed tag format (see [Tags](#tags)) | `ymlib retag` |
 | Rename and move files according to a path template | `ymlib organize` |
-| Group singles into one `<Artist> Singles` album, or split them back | `ymlib singles` |
 | Import a folder (rips, purchases) into the library | `ymlib import` |
 | Register download plugins (HTTP servers you run) | `ymlib plugin` |
 | Search and download through those plugins | `ymlib search`, `ymlib download`, `ymlib queue` |
@@ -72,7 +71,7 @@ Run `ymlib` with no arguments, or `ymlib tui`:
 | **2 Queue** | Jobs and the download log. `s` start/resume, `x` stop, `r`/`R` retry one/all failed, `c`/`C` clear finished (and failed). Jobs marked `…` wait for an offline or disabled plugin. |
 | **3 Library** | Albums (`/` filters by artist, album or track title), tracks, tags and cover. `e` edits the album's or the track's tags: preview first, `y` to write. `s` rescans. |
 | **4 Review** | Albums without a confident match: your files next to each candidate release (`←→`), with cover and tracklist. `enter` previews, `y` writes, `s` skips. |
-| **5 Settings** | Configuration, plugins (online/offline) and presets. `enter` enables or disables a plugin, or makes a preset active; saved to `config.yaml` with your comments kept. `r` checks the plugins again. |
+| **5 Settings** | Configuration (with the path of `config.yaml`) and plugins (online/offline). `enter` enables or disables a plugin, saved to `config.yaml` with your comments kept. `r` checks the plugins again. |
 
 `tab` or `1`–`5` switch screens, `q` quits, `esc` leaves a text box. Quitting stops downloads; they resume next time. Plugins are checked every 15 seconds; when one comes back online, downloads waiting for it start.
 
@@ -81,16 +80,17 @@ Covers are real images in **Kitty** and **Ghostty**. Other terminals (iTerm2, Ap
 ## Commands
 
 ### `scan`
-Walks `library_path`, reads tags and updates the index (SQLite). Files whose size and modification time haven't changed aren't read again. Hidden files and macOS `._*` files are skipped. `organize`, `retag`, `singles` and `identify` scan automatically first.
+Walks `library_path`, reads tags and updates the index (SQLite). Files whose size and modification time haven't changed aren't read again. Hidden files and macOS `._*` files are skipped. `organize`, `retag` and `identify` scan automatically first.
 
 ### `identify [folder...] [--force] [--apply]`
 Groups files by album and looks each album up. It tries Discogs first, then MusicBrainz if Discogs fails, finds nothing, or finds nothing confident.
 
 - **Whole-record matching:** every tag of a file comes from a single release, never a mix of sources.
-- Matching ignores case, accents, typographic quotes and edition suffixes like "(Remastered 2009)". Compilations are scored down so a single isn't mistaken for track 7 of a "Hits of 1987" album.
+- Matching ignores case, accents, typographic quotes, guest credits ("(feat. X)") and edition suffixes like "(Remastered 2009)". Compilations are scored down so a single isn't mistaken for track 7 of a "Hits of 1987" album.
 - Matches scoring at least `metadata.min_score` (default 0.85) are applied. Weaker ones go to `ymlib review`.
 - Dates are written as `yyyy-mm-dd` using the original release date. When a source only knows the year, the app looks further (the edition's date on MusicBrainz, the main edition on Discogs). A day is never invented.
-- Covers are downloaded once per album. The full-size image is saved as `cover.jpg` (and `back.jpg`) in the album folder, and the embedded copy follows your preset.
+- When the chosen release has no genre or no front cover, the next provider may fill them in, but only from a release that also scores at least `min_score` against your files. Otherwise the field stays empty.
+- The front cover is downloaded once per album. The full-size image is saved as `cover.jpg` in the album folder; the embedded copy is at most 600 px. Back covers aren't used.
 - Files that already carry a release ID are skipped; `--force` looks them up again.
 - Optional folders limit the run: `ymlib identify "Michael Jackson/Bad"`.
 
@@ -102,22 +102,16 @@ ymlib review skip <id>                 # dismiss without changes
 ```
 Review items keep track of files moved by `organize`, and close automatically when a later `identify` tags those files.
 
-### `retag [--preset NAME] [--apply]`
-Rewrites all files with a preset (default: `active_preset`). It removes fields the preset doesn't include and shrinks embedded covers. Before a cover is shrunk or removed, the full-size image is saved to the album folder. It also converts track numbers stored in other formats (`1`, `3/12`) to the zero-padded form.
+### `retag [--apply]`
+Brings every file to the fixed [tag format](#tags): removes track/disc totals and embedded back covers, pads numbers (`1`, `3/12` → `01`, `03`), converts typographic quotes and dashes to ASCII, moves guests from Artist into the title, restores singles that an older version grouped into `<Artist> Singles`, and shrinks embedded covers. Before a cover is shrunk, the full-size image is saved as `cover.jpg` in the album folder. Tags ymlib doesn't manage (ReplayGain, lyrics, comments) are kept. Run `organize` afterwards, since titles and numbers may change file names.
 
 ### `organize [--apply]`
 Moves files to the paths given by `path_template`. `cover.jpg` and other folder images move with their album, empty folders are removed, and letter-case-only renames work on macOS. Path conflicts are reported and skipped, never overwritten.
 
-### `singles [as-album|grouped] [--apply]`
-- `grouped`: each artist's singles become one album, `<Artist> Singles`, numbered by release date. The original album and track number are remembered.
-- `as-album`: every single gets its own album back.
-
-Only tags change; run `organize` afterwards to move the files. A file counts as a single if its release type is `single`, or if it's the only track of an album named like the track (`X`, `X - Single`).
-
 ### `import <folder> [--apply] [--move] [--force] [--no-lookup]`
 Brings audio files from outside the library in (CD rips, Bandcamp downloads, …).
 - Tracks already in the library are skipped (`--force` imports them anyway).
-- Albums are identified like `identify`, and files are tagged with the active preset and copied to their `path_template` location.
+- Albums are identified like `identify`, and files are tagged in the fixed format and copied to their `path_template` location.
 - `--move` deletes the originals after a successful import. `--no-lookup` keeps the files' own tags.
 
 ### Downloads: `plugin`, `search`, `download`, `queue`
@@ -141,16 +135,15 @@ How a download proceeds:
 3. The file is checked: it must decode (with ffmpeg, if installed), and its length must match what the source announced.
 4. Temporary failures are retried up to 3 times (after 30 s, 2 min, 8 min). When the plugin says the item is not found or permanently unavailable, the job fails right away.
 5. If the plugin is offline or disabled, the job waits without using up attempts. The next `ymlib queue run` (or the TUI, when the plugin is back) tries again; after `plugins.offline_wait_minutes` it fails, and `ymlib queue retry` brings it back.
-6. When all tracks of an album are in, the album is identified once, tagged with the active preset and filed by `path_template`. Nothing half-finished ever appears in the library.
+6. When all tracks of an album are in, the album is identified once, tagged in the fixed format and filed by `path_template`. Nothing half-finished ever appears in the library.
 
 **Source plugins.** ymlib doesn't include any download source. A plugin is an **HTTP server you run yourself**, in any language; ymlib only keeps its address and talks to it (`GET /health`, `POST /search`, `POST /resolve`, `POST /download`, which streams the file). Register one with `ymlib plugin add <name> http://127.0.0.1:<port>`. If a plugin is offline, searches skip it and its queued downloads wait (up to `plugins.offline_wait_minutes`) instead of failing. The protocol, with a minimal Python plugin, is in [docs/plugin-protocol.md](docs/plugin-protocol.md). Plugin authors are responsible for using services in line with their terms.
 
-### `config`, `preset`, `auth`
+### `config`, `auth`
 ```sh
 ymlib config path        # where config, database and cache live
 ymlib config show        # effective configuration
 ymlib config init [--force]
-ymlib preset list        # presets; * marks the active one
 ymlib auth discogs       # store the Discogs token (--remove to delete)
 ymlib auth status
 ```
@@ -161,9 +154,7 @@ ymlib auth status
 
 ```yaml
 library_path: ~/Music/ymlib
-active_preset: full                # preset used by identify and retag
 path_template: '{albumartist}/{album}/{disc?}{track:02} - {title}.{ext}'
-singles: as-album                  # or: grouped
 providers: [discogs, musicbrainz]  # lookup order
 metadata:
   min_score: 0.85                  # below this, matches go to review
@@ -176,26 +167,27 @@ plugins:
   offline_wait_minutes: 60         # downloads of an offline or disabled plugin wait this long, then fail
   registered:                      # managed by `ymlib plugin add|remove|enable|disable`
     myplugin: {url: "http://127.0.0.1:8765", enabled: true}
-presets:
-  car:                             # your own presets
-    fields: [Title, Artist, Album, Track Number, Picture Cover]
-    cover_max_px: 300
 ```
 
-### Fields and presets
+Presets (`active_preset`, `presets`) and the singles mode (`singles`) were removed. If your file still has them, ymlib deletes those keys on the next start (keeping your comments) and says so once.
 
-Fields: `Title`, `Album`, `Artist`, `Artists` (all performers), `Album Artist`, `Date`, `Track Number`, `Disc Number`, `Genre`, `Picture Cover`, `Picture Back`.
+### Tags
 
-| Built-in preset | Fields | Embedded covers |
-|---|---|---|
-| `full` | all | max 600 px |
-| `mp3-player` | all except `Artists` and `Picture Back` | max 600 px |
+The tag format is fixed; there are no presets. Every file gets:
 
-`cover_max_px` limits the longest side of embedded front and back covers, keeping the aspect ratio (`0` = original size). The full-size images are kept as `cover.jpg`/`back.jpg` in the album folder.
+| Field | Notes |
+|---|---|
+| Title | a guest moves here from Artist: `Bad (feat. X)` |
+| Album, Album Artist, Genre, Date | Date is `yyyy-mm-dd`, or `yyyy` / `yyyy-mm` when that's all that's known |
+| Artist | the main artist only, so players group correctly |
+| Artists | every performer (multiple values) |
+| Track Number, Disc Number | two digits, no totals: `01` (MP3 `TRCK=01`, FLAC `TRACKNUMBER=01`) |
+| Picture Cover | the front cover, at most 600 px; full size in `cover.jpg` |
 
-A user preset with a built-in's name replaces it. Release IDs (MusicBrainz, Discogs, ISRC) are always kept so files can be recognized again.
-
-Track numbers are stored zero-padded: `01`, `10` (MP3: `01/11`).
+- Text is ASCII for quotes, dashes and ellipses: `’` → `'`, `“ ”` → `"`, `– —` → `-`, `…` → `...`.
+- Guests are split only on `feat.`, `ft.` and `featuring`, never on `&`, so `Simon & Garfunkel` stays one artist.
+- Release IDs (MusicBrainz, Discogs, ISRC) and the plugin's source IDs are always written, so files can be recognized again.
+- Back covers and track/disc totals are not written. Tags ymlib doesn't manage (ReplayGain, lyrics, comments) are kept.
 
 ### Path template
 
@@ -205,7 +197,7 @@ Track numbers are stored zero-padded: `01`, `10` (MP3: `01/11`).
 | `{artist}`, `{album}`, `{title}`, `{genre}`, `{date}` | tag values |
 | `{year}` | year from Date |
 | `{track}`, `{disc}` | numbers; `{track:02}` pads to 2 digits |
-| `{disc?}` | `2-` on multi-disc albums, empty otherwise |
+| `{disc?}` | `02-` on multi-disc albums (two digits), empty otherwise. An album counts as multi-disc when its files have a disc number of 2 or more. |
 | `{ext}` | file extension (required at the end) |
 
 Names are made safe for FAT32/exFAT (SD cards, players): characters like `/ \ : * ? " < > |` become `_`, there are no leading dots or trailing dots and spaces, and names have a length limit. Missing values become `Unknown Artist`, `Unknown Album` or `Untitled`.

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"your-music-library/internal/cleanup"
-	"your-music-library/internal/config"
 	"your-music-library/internal/metadata"
 )
 
@@ -140,8 +139,8 @@ func (l *Library) PlanResolve(ctx context.Context, id int64, n int, refiner *met
 }
 
 // ApplyResolve writes the chosen candidate and closes the review.
-func (l *Library) ApplyResolve(ctx context.Context, id int64, am AlbumMatch, preset config.Preset, images ImageSource) (IdentifyReport, error) {
-	r, err := l.ApplyIdentify(ctx, IdentifyPlan{Matches: []AlbumMatch{am}}, preset, images)
+func (l *Library) ApplyResolve(ctx context.Context, id int64, am AlbumMatch, images ImageSource) (IdentifyReport, error) {
+	r, err := l.ApplyIdentify(ctx, IdentifyPlan{Matches: []AlbumMatch{am}}, images)
 	if err != nil {
 		return r, err
 	}

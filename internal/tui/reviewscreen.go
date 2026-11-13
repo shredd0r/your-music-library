@@ -173,7 +173,7 @@ func (m *reviewScreen) key(key string) tea.Cmd {
 			m.busy = "writing tags…"
 			s, id, am := m.s, r.ID, *m.preview
 			return func() tea.Msg {
-				rep, err := s.d.Lib.ApplyResolve(s.ctx, id, am, s.preset(), s.d.Images)
+				rep, err := s.d.Lib.ApplyResolve(s.ctx, id, am, s.d.Images)
 				return resolveDoneMsg{id: id, rep: rep, err: err}
 			}
 		case "esc", "n":

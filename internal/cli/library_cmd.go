@@ -10,7 +10,6 @@ import (
 
 	"errors"
 	"your-music-library/internal/cleanup"
-	"your-music-library/internal/config"
 	"your-music-library/internal/library"
 	"your-music-library/internal/platform"
 	"your-music-library/internal/store"
@@ -105,25 +104,18 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 	}
 	organize.Flags().BoolVar(&organizeApply, "apply", false, "move the files")
 
-	var retagPreset string
 	var retagApply bool
 	retag := &cobra.Command{
 		Use:   "retag",
-		Short: "Rewrite tags of all files with a preset (preview unless --apply)",
-		Long: "Removes fields the preset does not include and shrinks embedded covers to\n" +
-			"the preset's size. Before an embedded cover is shrunk or removed, the full-size\n" +
-			"image is saved as cover.jpg/back.jpg in the album folder if none exists.",
+		Short: "Bring all files to the fixed tag format (preview unless --apply)",
+		Long: "Removes track/disc totals and embedded back covers, pads numbers (01),\n" +
+			"converts typographic quotes and dashes to ASCII, moves guests from Artist into\n" +
+			"the title (feat.), restores grouped singles and shrinks embedded covers to\n" +
+			"600 px. Before an embedded cover is shrunk, the full-size image is saved as\n" +
+			"cover.jpg in the album folder if none exists. Other tags are kept.",
 		Args:    cobra.NoArgs,
 		PreRunE: loadConfig,
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
-			name := retagPreset
-			if name == "" {
-				name = a.cfg.ActivePreset
-			}
-			preset, ok := a.cfg.Preset(name)
-			if !ok {
-				return fmt.Errorf("unknown preset %q (see: ymlib preset list)", name)
-			}
 			lib, db, err := a.openLibrary()
 			if err != nil {
 				return err
@@ -133,7 +125,7 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 			if err := scanQuietly(ctx, w, lib); err != nil {
 				return err
 			}
-			p, err := lib.PlanRetag(ctx, preset)
+			p, err := lib.PlanRetag(ctx)
 			if err != nil {
 				return err
 			}
@@ -147,8 +139,7 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 			for _, f := range p.Failed {
 				fmt.Fprintf(w, "! %s: %v\n", f.Path, f.Err)
 			}
-			fmt.Fprintf(w, "preset %q: %d to change, %d already match, %d unreadable\n",
-				name, len(p.Items), p.Unchanged, len(p.Failed))
+			fmt.Fprintf(w, "%d to change, %d already match, %d unreadable\n", len(p.Items), p.Unchanged, len(p.Failed))
 			if len(p.Items) == 0 {
 				return nil
 			}
@@ -156,74 +147,16 @@ func newLibraryCommands(a *app, loadConfig preRun) []*cobra.Command {
 				fmt.Fprintln(w, "Preview only. Run again with --apply to write the tags.")
 				return nil
 			}
-			r, err := lib.ApplyRetag(ctx, p, preset)
+			r, err := lib.ApplyRetag(ctx, p)
 			if err != nil {
 				return err
 			}
 			return reportApply(w, "retagged", r)
 		},
 	}
-	retag.Flags().StringVar(&retagPreset, "preset", "", "preset to apply (default: active_preset)")
 	retag.Flags().BoolVar(&retagApply, "apply", false, "write the tags")
 
-	var singlesApply bool
-	singles := &cobra.Command{
-		Use:   "singles [as-album|grouped]",
-		Short: "Convert singles between as-album and grouped (preview unless --apply)",
-		Long: "grouped: each artist's singles become one album \"<Artist> Singles\", numbered\n" +
-			"by release date. as-album: every single gets its own album back.\n" +
-			"Only tags change; run `ymlib organize` afterwards to move the files.\n" +
-			"Without an argument the mode from config (singles:) is used.",
-		Args:      cobra.MaximumNArgs(1),
-		ValidArgs: []string{string(config.SinglesAsAlbum), string(config.SinglesGrouped)},
-		PreRunE:   loadConfig,
-		RunE: func(cmd *cobra.Command, args []string) (err error) {
-			mode := a.cfg.Singles
-			if len(args) == 1 {
-				mode = config.SinglesMode(args[0])
-				if mode != config.SinglesAsAlbum && mode != config.SinglesGrouped {
-					return fmt.Errorf("mode must be %q or %q", config.SinglesAsAlbum, config.SinglesGrouped)
-				}
-			}
-			lib, db, err := a.openLibrary()
-			if err != nil {
-				return err
-			}
-			defer cleanup.Close(&err, db)
-			ctx, w := cmd.Context(), cmd.OutOrStdout()
-			if err := scanQuietly(ctx, w, lib); err != nil {
-				return err
-			}
-			items, err := lib.PlanSingles(ctx, mode)
-			if err != nil {
-				return err
-			}
-			for _, it := range items {
-				fmt.Fprintf(w, "  %s\n", it.Path)
-				printChanges(w, it.Changes)
-			}
-			fmt.Fprintf(w, "singles %s: %d files to change\n", mode, len(items))
-			if len(items) == 0 {
-				return nil
-			}
-			if !singlesApply {
-				fmt.Fprintln(w, "Preview only. Run again with --apply to write the tags.")
-				return nil
-			}
-			r, err := lib.ApplySingles(ctx, items)
-			if err != nil {
-				return err
-			}
-			if err := reportApply(w, "retagged", r); err != nil {
-				return err
-			}
-			fmt.Fprintln(w, "Run `ymlib organize` to move the files into their new folders.")
-			return nil
-		},
-	}
-	singles.Flags().BoolVar(&singlesApply, "apply", false, "write the tags")
-
-	return []*cobra.Command{scan, organize, retag, singles}
+	return []*cobra.Command{scan, organize, retag}
 }
 
 // scanQuietly refreshes the index before planning and prints one line.

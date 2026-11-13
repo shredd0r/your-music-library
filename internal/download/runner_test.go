@@ -48,8 +48,8 @@ func setup(t *testing.T) *env {
 	var mu sync.Mutex
 	e.runner = &Runner{
 		Queue: e.q, Sources: source.NewRegistry([]*source.Plugin{e.plugin}), Lib: lib,
-		Preset: config.Default().Presets["full"], Parallel: 2,
-		Backoff: func(int) time.Duration { return 0 },
+		Parallel: 2,
+		Backoff:  func(int) time.Duration { return 0 },
 		Log: func(format string, args ...any) {
 			mu.Lock()
 			e.logs = append(e.logs, strings.TrimSpace(sprintf(format, args...)))

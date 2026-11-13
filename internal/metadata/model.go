@@ -66,7 +66,6 @@ type Release struct {
 
 	Tracks   []Track
 	FrontURL string
-	BackURL  string
 
 	MasterID string // Discogs master release, used to find a full date
 }
@@ -96,24 +95,4 @@ type Track struct {
 	Duration      time.Duration
 	ISRC          string
 	MBRecordingID string
-}
-
-// DiscTotal is the number of discs.
-func (r Release) DiscTotal() int {
-	n := 0
-	for _, t := range r.Tracks {
-		n = max(n, t.Disc)
-	}
-	return n
-}
-
-// TrackTotal is the number of tracks on disc.
-func (r Release) TrackTotal(disc int) int {
-	n := 0
-	for _, t := range r.Tracks {
-		if t.Disc == disc {
-			n++
-		}
-	}
-	return n
 }

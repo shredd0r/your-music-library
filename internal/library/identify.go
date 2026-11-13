@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/tags"
 )
@@ -111,11 +110,7 @@ func identifyEntries(ctx context.Context, id *metadata.Identifier, es []Entry, p
 			untitled = append(untitled, e.Path)
 			continue
 		}
-		// grouped singles are looked up as their own release
 		album := e.Album
-		if e.OriginalAlbum != "" {
-			album = e.OriginalAlbum
-		}
 		key := pathKey(e.EffectiveAlbumArtist()) + "\x00" + pathKey(album)
 		if album == "" {
 			key += "\x00" + e.Path
@@ -127,13 +122,8 @@ func identifyEntries(ctx context.Context, id *metadata.Identifier, es []Entry, p
 			keys = append(keys, key)
 		}
 		g.entries = append(g.entries, e)
-		disc := e.DiscNumber
-		number := e.TrackNumber
-		if e.OriginalAlbum != "" {
-			number, disc = e.OriginalTrack, 0
-		}
 		g.query.Tracks = append(g.query.Tracks, metadata.QueryTrack{
-			Title: e.Title, Number: number, Disc: disc, ISRC: e.IDs.ISRC,
+			Title: e.Title, Number: e.TrackNumber, Disc: e.DiscNumber, ISRC: e.IDs.ISRC,
 		})
 	}
 	sort.Strings(keys)
@@ -174,7 +164,8 @@ func buildAlbumMatch(folder string, entries []Entry, m metadata.Match) AlbumMatc
 			am.Unmatched = append(am.Unmatched, e.Path)
 			continue
 		}
-		want := ApplyRelease(e.Track, m.Release, m.Assign[i])
+		// Entries carry no pictures, so Format has no cover to fail on.
+		want, _ := tags.Format(ApplyRelease(e.Track, m.Release, m.Assign[i]))
 		am.Items = append(am.Items, IdentifyItem{Path: e.Path, Changes: tags.Diff(e.Track, want), track: m.Assign[i]})
 	}
 	return am
@@ -182,9 +173,8 @@ func buildAlbumMatch(folder string, entries []Entry, m metadata.Match) AlbumMatc
 
 // ApplyRelease returns cur with every release-derived field replaced by
 // the values of rel's track ti (whole-record: nothing is mixed in from
-// another release). Pictures are not touched here. For a grouped single
-// the group's album and numbering are kept and the release goes into
-// OriginalAlbum/OriginalTrack.
+// another release, except the genre and cover fill done by
+// metadata.Identifier). Pictures are not touched here.
 func ApplyRelease(cur tags.Track, rel metadata.Release, ti int) tags.Track {
 	rt := rel.Tracks[ti]
 	out := cur
@@ -206,14 +196,10 @@ func ApplyRelease(cur tags.Track, rel metadata.Release, ti int) tags.Track {
 	case "discogs":
 		out.IDs.DiscogsReleaseID = rel.ID
 	}
-	if cur.OriginalAlbum != "" {
-		out.OriginalAlbum, out.OriginalTrack = rel.Title, rt.Number
-		return out
-	}
 	out.Album = rel.Title
 	out.AlbumArtist = rel.Artist
-	out.TrackNumber, out.TrackTotal = rt.Number, rel.TrackTotal(rt.Disc)
-	out.DiscNumber, out.DiscTotal = rt.Disc, rel.DiscTotal()
+	out.TrackNumber, out.DiscNumber = rt.Number, rt.Disc
+	out.TrackTotal, out.DiscTotal = 0, 0
 	return out
 }
 
@@ -230,18 +216,18 @@ type IdentifyReport struct {
 	Warnings []string // e.g. cover download failures; tags were still written
 }
 
-// ApplyIdentify writes matched releases (with covers, shaped by preset)
-// and records review drafts in the Needs Review list.
-func (l *Library) ApplyIdentify(ctx context.Context, plan IdentifyPlan, preset config.Preset, images ImageSource) (IdentifyReport, error) {
+// ApplyIdentify writes matched releases (with covers, in the fixed tag
+// format) and records review drafts in the Needs Review list.
+func (l *Library) ApplyIdentify(ctx context.Context, plan IdentifyPlan, images ImageSource) (IdentifyReport, error) {
 	var r IdentifyReport
 	tagged := map[string]bool{}
 	for _, am := range plan.Matches {
 		if err := ctx.Err(); err != nil {
 			return r, err
 		}
-		front, back := l.fetchCovers(ctx, am.Release, images, &r)
+		front := l.fetchCover(ctx, am.Release, images, &r)
 		for _, it := range am.Items {
-			if err := l.writeRelease(ctx, it.Path, am.Release, it.track, front, back, preset, path.Dir(it.Path)); err != nil {
+			if err := l.writeRelease(ctx, it.Path, am.Release, it.track, front, path.Dir(it.Path)); err != nil {
 				r.Failed = append(r.Failed, FileError{it.Path, err})
 				continue
 			}
@@ -261,25 +247,20 @@ func (l *Library) ApplyIdentify(ctx context.Context, plan IdentifyPlan, preset c
 	return r, nil
 }
 
-func (l *Library) fetchCovers(ctx context.Context, rel metadata.Release, images ImageSource, r *IdentifyReport) (front, back *tags.Picture) {
-	if images == nil {
-		return nil, nil
+// fetchCover downloads rel's front cover. Back covers are not used.
+func (l *Library) fetchCover(ctx context.Context, rel metadata.Release, images ImageSource, r *IdentifyReport) *tags.Picture {
+	if images == nil || rel.FrontURL == "" {
+		return nil
 	}
-	get := func(url, what string) *tags.Picture {
-		if url == "" {
-			return nil
-		}
-		data, mime, err := images.Fetch(ctx, url)
-		if err != nil {
-			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %s cover: %v", rel.Title, what, err))
-			return nil
-		}
-		return &tags.Picture{MIME: mime, Data: data}
+	data, mime, err := images.Fetch(ctx, rel.FrontURL)
+	if err != nil {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("%s: front cover: %v", rel.Title, err))
+		return nil
 	}
-	return get(rel.FrontURL, "front"), get(rel.BackURL, "back")
+	return &tags.Picture{MIME: mime, Data: data}
 }
 
-func (l *Library) writeRelease(ctx context.Context, rel string, release metadata.Release, ti int, front, back *tags.Picture, preset config.Preset, imageDir string) error {
+func (l *Library) writeRelease(ctx context.Context, rel string, release metadata.Release, ti int, front *tags.Picture, imageDir string) error {
 	abs := l.abs(rel)
 	cur, err := tags.Read(abs)
 	if err != nil {
@@ -289,19 +270,16 @@ func (l *Library) writeRelease(ctx context.Context, rel string, release metadata
 	if front != nil {
 		want.Cover = front
 	}
-	if back != nil {
-		want.Back = back
-	}
-	return l.writeWithPreset(ctx, rel, want, preset, imageDir)
+	return l.writeFormatted(ctx, rel, want, imageDir)
 }
 
-// writeWithPreset saves full-size pictures of t as cover.jpg/back.jpg in
-// imageDir (if missing), applies preset and writes t to rel.
-func (l *Library) writeWithPreset(ctx context.Context, rel string, t tags.Track, preset config.Preset, imageDir string) error {
-	if err := l.saveFolderImages(imageDir, t.Cover, t.Back); err != nil {
+// writeFormatted saves t's full-size cover as cover.jpg in imageDir (if
+// missing), brings t to the fixed tag format and writes it to rel.
+func (l *Library) writeFormatted(ctx context.Context, rel string, t tags.Track, imageDir string) error {
+	if err := l.saveFolderCover(imageDir, t.Cover); err != nil {
 		return err
 	}
-	t, err := tags.ApplyPreset(t, preset)
+	t, err := tags.Format(t)
 	if err != nil {
 		return err
 	}
@@ -311,22 +289,14 @@ func (l *Library) writeWithPreset(ctx context.Context, rel string, t tags.Track,
 	return l.reindex(ctx, rel)
 }
 
-// saveFolderImages writes cover/back as full-size folder images unless
-// the folder already has them.
-func (l *Library) saveFolderImages(dir string, front, back *tags.Picture) error {
-	for _, pic := range []struct {
-		p    *tags.Picture
-		base string
-	}{{front, "cover"}, {back, "back"}} {
-		if pic.p == nil || l.hasFolderImage(dir, pic.base) {
-			continue
-		}
-		if err := os.MkdirAll(l.abs(dir), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(l.abs(path.Join(dir, pic.base+imageExt(pic.p.MIME))), pic.p.Data, 0o644); err != nil {
-			return err
-		}
+// saveFolderCover writes front as the full-size folder cover unless the
+// folder already has one.
+func (l *Library) saveFolderCover(dir string, front *tags.Picture) error {
+	if front == nil || l.hasFolderImage(dir, "cover") {
+		return nil
 	}
-	return nil
+	if err := os.MkdirAll(l.abs(dir), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(l.abs(path.Join(dir, "cover"+imageExt(front.MIME))), front.Data, 0o644)
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"your-music-library/internal/cleanup"
-	"your-music-library/internal/config"
 	"your-music-library/internal/download"
 	"your-music-library/internal/library"
 	"your-music-library/internal/queue"
@@ -192,9 +191,8 @@ func (a *app) runQueue(cmd *cobra.Command, lib *library.Library, db *sql.DB, for
 	ctx, stop := withInterrupt(cmd.Context())
 	defer stop()
 	w, ew := cmd.OutOrStdout(), cmd.ErrOrStderr()
-	preset, _ := a.cfg.Preset(a.cfg.ActivePreset)
 	r := &download.Runner{
-		Queue: queue.New(db), Sources: reg, Lib: lib, Preset: preset,
+		Queue: queue.New(db), Sources: reg, Lib: lib,
 		Parallel: a.cfg.Queue.Parallel, Force: force,
 		OfflineWait: time.Duration(a.cfg.Plugins.OfflineWaitMinutes) * time.Minute,
 		Log:         func(format string, args ...any) { fmt.Fprintf(w, format+"\n", args...) },
@@ -218,9 +216,6 @@ func (a *app) runQueue(cmd *cobra.Command, lib *library.Library, db *sql.DB, for
 	}
 	if err != nil {
 		return err
-	}
-	if a.cfg.Singles == config.SinglesGrouped && sum.Imported > 0 {
-		fmt.Fprintln(w, "Singles are grouped: run `ymlib singles` and `ymlib organize` to file new singles.")
 	}
 	if sum.Failed > 0 {
 		fmt.Fprintln(w, "See `ymlib queue` for errors; `ymlib queue retry` tries failed jobs again.")
@@ -435,12 +430,11 @@ func newImportCommand(a *app, loadConfig preRun) *cobra.Command {
 				fmt.Fprintln(w, "Preview only. Run again with --apply to import.")
 				return nil
 			}
-			preset, _ := a.cfg.Preset(a.cfg.ActivePreset)
 			var images library.ImageSource
 			if ms != nil {
 				images = ms.images
 			}
-			rep, err := lib.ApplyIngest(ctx, plan, preset, images, opts)
+			rep, err := lib.ApplyIngest(ctx, plan, images, opts)
 			if err != nil {
 				return err
 			}

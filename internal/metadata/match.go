@@ -171,37 +171,21 @@ type Identifier struct {
 	Details int
 }
 
-// Identify finds the release matching q.
+// Identify finds the release matching q. When the chosen release has no
+// genre or front cover, the providers after it may fill them (see fill).
 func (id *Identifier) Identify(ctx context.Context, q Query) (Result, error) {
 	var res Result
-	details := id.Details
-	if details <= 0 {
-		details = 3
-	}
-	for _, p := range id.Providers {
-		cands, err := p.Search(ctx, q)
-		if err != nil {
-			if ctx.Err() != nil {
-				return res, ctx.Err()
-			}
-			res.ProviderErrors = append(res.ProviderErrors, fmt.Errorf("%s: %w", p.Name(), err))
-			continue
+	for i, p := range id.Providers {
+		ms, errs := id.search(ctx, p, q)
+		if err := ctx.Err(); err != nil {
+			return res, err
 		}
-		sort.SliceStable(cands, func(i, j int) bool { return summaryScore(q, cands[i]) > summaryScore(q, cands[j]) })
-		for _, c := range cands[:min(details, len(cands))] {
-			rel, err := p.Release(ctx, c.ID)
-			if err != nil {
-				if ctx.Err() != nil {
-					return res, ctx.Err()
-				}
-				res.ProviderErrors = append(res.ProviderErrors, fmt.Errorf("%s release %s: %w", p.Name(), c.ID, err))
-				continue
-			}
-			res.Candidates = append(res.Candidates, Score(q, rel))
-		}
+		res.ProviderErrors = append(res.ProviderErrors, errs...)
+		res.Candidates = append(res.Candidates, ms...)
 		sort.SliceStable(res.Candidates, func(i, j int) bool { return better(q, res.Candidates[i], res.Candidates[j]) })
 		if len(res.Candidates) > 0 && res.Candidates[0].Score >= id.MinScore {
 			id.Refine(ctx, &res.Candidates[0].Release)
+			id.fill(ctx, q, &res.Candidates[0].Release, id.Providers[i+1:])
 			best := res.Candidates[0]
 			res.Best = &best
 			return res, nil
@@ -211,6 +195,60 @@ func (id *Identifier) Identify(ctx context.Context, q Query) (Result, error) {
 		return res, errors.Join(res.ProviderErrors...)
 	}
 	return res, nil
+}
+
+// search asks one provider for q and scores the most promising hits. A
+// failed search gives one error; failed release lookups are skipped.
+func (id *Identifier) search(ctx context.Context, p Provider, q Query) ([]Match, []error) {
+	details := id.Details
+	if details <= 0 {
+		details = 3
+	}
+	cands, err := p.Search(ctx, q)
+	if err != nil {
+		return nil, []error{fmt.Errorf("%s: %w", p.Name(), err)}
+	}
+	sort.SliceStable(cands, func(i, j int) bool { return summaryScore(q, cands[i]) > summaryScore(q, cands[j]) })
+	var ms []Match
+	var errs []error
+	for _, c := range cands[:min(details, len(cands))] {
+		rel, err := p.Release(ctx, c.ID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ms, errs
+			}
+			errs = append(errs, fmt.Errorf("%s release %s: %w", p.Name(), c.ID, err))
+			continue
+		}
+		ms = append(ms, Score(q, rel))
+	}
+	return ms, errs
+}
+
+// fill completes rel's missing genre and front cover from providers, in
+// order. A value is taken only from a release scoring at least MinScore
+// against q, so it belongs to the same record; otherwise the field stays
+// empty. It is the one exception to whole-record matching.
+func (id *Identifier) fill(ctx context.Context, q Query, rel *Release, providers []Provider) {
+	for _, p := range providers {
+		if rel.Genre != "" && rel.FrontURL != "" {
+			return
+		}
+		ms, _ := id.search(ctx, p, q)
+		if ctx.Err() != nil {
+			return
+		}
+		sort.SliceStable(ms, func(i, j int) bool { return better(q, ms[i], ms[j]) })
+		if len(ms) == 0 || ms[0].Score < id.MinScore {
+			continue
+		}
+		if rel.Genre == "" {
+			rel.Genre = ms[0].Release.Genre
+		}
+		if rel.FrontURL == "" {
+			rel.FrontURL = ms[0].Release.FrontURL
+		}
+	}
 }
 
 // summaryScore pre-ranks search hits so details are fetched for the most

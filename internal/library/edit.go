@@ -10,79 +10,64 @@ import (
 	"strconv"
 	"strings"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/tags"
 )
 
 // EditableFields are the text fields a user can edit by hand, in display
 // order. Pictures are not edited this way.
-var EditableFields = []config.Field{
-	config.FieldTitle, config.FieldArtist, config.FieldArtists, config.FieldAlbum,
-	config.FieldAlbumArtist, config.FieldDate, config.FieldTrackNumber,
-	config.FieldDiscNumber, config.FieldGenre,
+var EditableFields = []tags.Field{
+	tags.FieldTitle, tags.FieldArtist, tags.FieldArtists, tags.FieldAlbum,
+	tags.FieldAlbumArtist, tags.FieldDate, tags.FieldTrackNumber,
+	tags.FieldDiscNumber, tags.FieldGenre,
 }
 
 // AlbumFields are the editable fields that are shared by an album's tracks.
-var AlbumFields = []config.Field{
-	config.FieldAlbum, config.FieldAlbumArtist, config.FieldDate, config.FieldGenre,
+var AlbumFields = []tags.Field{
+	tags.FieldAlbum, tags.FieldAlbumArtist, tags.FieldDate, tags.FieldGenre,
 }
 
 // TagEdit maps fields to their new value as text; an empty value removes
-// the tag. Fields not in the map are kept. Artists are separated by "; ",
-// and numbers may carry a total ("3/12").
-type TagEdit map[config.Field]string
+// the tag. Fields not in the map are kept. Artists are separated by "; ".
+// Numbers are plain ("3" or "03"): totals are not written.
+type TagEdit map[tags.Field]string
 
 // FieldValue returns field f of t as an editable string, the inverse of
 // what an edit accepts.
-func FieldValue(t tags.Track, f config.Field) string {
+func FieldValue(t tags.Track, f tags.Field) string {
 	switch f {
-	case config.FieldTitle:
+	case tags.FieldTitle:
 		return t.Title
-	case config.FieldAlbum:
+	case tags.FieldAlbum:
 		return t.Album
-	case config.FieldArtist:
+	case tags.FieldArtist:
 		return t.Artist
-	case config.FieldArtists:
+	case tags.FieldArtists:
 		return strings.Join(t.Artists, "; ")
-	case config.FieldAlbumArtist:
+	case tags.FieldAlbumArtist:
 		return t.AlbumArtist
-	case config.FieldDate:
+	case tags.FieldDate:
 		return t.Date
-	case config.FieldTrackNumber:
-		return numberPair(t.TrackNumber, t.TrackTotal)
-	case config.FieldDiscNumber:
-		return numberPair(t.DiscNumber, t.DiscTotal)
-	case config.FieldGenre:
+	case tags.FieldTrackNumber:
+		return tags.PadNumber(t.TrackNumber)
+	case tags.FieldDiscNumber:
+		return tags.PadNumber(t.DiscNumber)
+	case tags.FieldGenre:
 		return t.Genre
 	}
 	return ""
 }
 
-func numberPair(n, total int) string {
-	switch {
-	case n == 0:
-		return ""
-	case total == 0:
-		return strconv.Itoa(n)
-	}
-	return fmt.Sprintf("%d/%d", n, total)
-}
-
 var datePattern = regexp.MustCompile(`^\d{4}(-\d{2}(-\d{2})?)?$`)
 
-func parseNumberPair(f config.Field, s string) (n, total int, err error) {
+func parseNumber(f tags.Field, s string) (int, error) {
 	if s == "" {
-		return 0, 0, nil
+		return 0, nil
 	}
-	a, b, hasTotal := strings.Cut(s, "/")
-	n, err = strconv.Atoi(strings.TrimSpace(a))
-	if err == nil && hasTotal {
-		total, err = strconv.Atoi(strings.TrimSpace(b))
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%s: %q is not a number like 3", f, s)
 	}
-	if err != nil || n < 1 || total < 0 || (total > 0 && n > total) {
-		return 0, 0, fmt.Errorf("%s: %q is not a number like 3 or 3/12", f, s)
-	}
-	return n, total, nil
+	return n, nil
 }
 
 // Apply returns t with the edit applied.
@@ -90,39 +75,39 @@ func (e TagEdit) Apply(t tags.Track) (tags.Track, error) {
 	for f, raw := range e {
 		v := strings.TrimSpace(raw)
 		switch f {
-		case config.FieldTitle:
+		case tags.FieldTitle:
 			t.Title = v
-		case config.FieldAlbum:
+		case tags.FieldAlbum:
 			t.Album = v
-		case config.FieldArtist:
+		case tags.FieldArtist:
 			t.Artist = v
-		case config.FieldArtists:
+		case tags.FieldArtists:
 			t.Artists = nil
 			for _, a := range strings.Split(v, ";") {
 				if a = strings.TrimSpace(a); a != "" {
 					t.Artists = append(t.Artists, a)
 				}
 			}
-		case config.FieldAlbumArtist:
+		case tags.FieldAlbumArtist:
 			t.AlbumArtist = v
-		case config.FieldDate:
+		case tags.FieldDate:
 			if v != "" && !datePattern.MatchString(v) {
 				return t, fmt.Errorf("date %q must be YYYY, YYYY-MM or YYYY-MM-DD", v)
 			}
 			t.Date = v
-		case config.FieldTrackNumber:
-			n, total, err := parseNumberPair(f, v)
+		case tags.FieldTrackNumber:
+			n, err := parseNumber(f, v)
 			if err != nil {
 				return t, err
 			}
-			t.TrackNumber, t.TrackTotal = n, total
-		case config.FieldDiscNumber:
-			n, total, err := parseNumberPair(f, v)
+			t.TrackNumber = n
+		case tags.FieldDiscNumber:
+			n, err := parseNumber(f, v)
 			if err != nil {
 				return t, err
 			}
-			t.DiscNumber, t.DiscTotal = n, total
-		case config.FieldGenre:
+			t.DiscNumber = n
+		case tags.FieldGenre:
 			t.Genre = v
 		default:
 			return t, fmt.Errorf("%s cannot be edited", f)
@@ -144,6 +129,16 @@ type EditPlan struct {
 	edit      TagEdit
 }
 
+// result is cur with the edit applied, in the fixed tag format (so the
+// preview shows what is written: ASCII text, guests in the title, ...).
+func (p EditPlan) result(cur tags.Track) (tags.Track, error) {
+	want, err := p.edit.Apply(cur)
+	if err != nil {
+		return want, err
+	}
+	return tags.Format(want)
+}
+
 // PlanEdit previews applying edit to the files at paths (relative to the
 // library). Invalid values are reported before anything is read.
 func (l *Library) PlanEdit(ctx context.Context, paths []string, edit TagEdit) (EditPlan, error) {
@@ -159,7 +154,7 @@ func (l *Library) PlanEdit(ctx context.Context, paths []string, edit TagEdit) (E
 		if err != nil {
 			return plan, err
 		}
-		want, err := edit.Apply(cur)
+		want, err := plan.result(cur)
 		if err != nil {
 			return plan, err
 		}
@@ -187,7 +182,7 @@ func (l *Library) ApplyEdit(ctx context.Context, plan EditPlan) (ApplyReport, er
 			r.Failed = append(r.Failed, FileError{it.Path, err})
 			continue
 		}
-		want, err := plan.edit.Apply(cur)
+		want, err := plan.result(cur)
 		if err == nil {
 			err = tags.Write(abs, want)
 		}

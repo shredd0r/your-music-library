@@ -182,8 +182,8 @@ func (mp3Codec) write(path string, t Track) (err error) {
 	addText("TPE1", t.Artist)
 	addText("TPE2", t.AlbumArtist)
 	addText("TDRC", t.Date)
-	addText("TRCK", formatTrackPair(t.TrackNumber, t.TrackTotal))
-	addText("TPOS", formatNumberPair(t.DiscNumber, t.DiscTotal))
+	addText("TRCK", PadNumber(t.TrackNumber))
+	addText("TPOS", PadNumber(t.DiscNumber))
 	addText("TCON", t.Genre)
 	addText("TSRC", t.IDs.ISRC)
 	// ID3v2.4 separates multiple values with NUL (Picard convention for ARTISTS).
@@ -193,32 +193,22 @@ func (mp3Codec) write(path string, t Track) (err error) {
 	addTXXX(txDiscogs, t.IDs.DiscogsReleaseID)
 	addTXXX(txSource, t.IDs.Source)
 	addTXXX(txSourceTrackID, t.IDs.SourceTrackID)
-	addTXXX(txOrigAlbum, t.OriginalAlbum)
-	addTXXX(txOrigTrack, itoaOrEmpty(t.OriginalTrack))
 	if t.IDs.MBRecordingID != "" {
 		tag.AddUFIDFrame(id3v2.UFIDFrame{OwnerIdentifier: ufidMusicBrainz, Identifier: []byte(t.IDs.MBRecordingID)})
 	}
-	for _, p := range []struct {
-		pic *Picture
-		typ byte
-	}{{t.Cover, id3v2.PTFrontCover}, {t.Back, id3v2.PTBackCover}} {
-		if p.pic != nil {
-			tag.AddAttachedPicture(id3v2.PictureFrame{Encoding: id3v2.EncodingUTF8, MimeType: p.pic.MIME, PictureType: p.typ, Picture: p.pic.Data})
-		}
+	if t.Cover != nil {
+		tag.AddAttachedPicture(id3v2.PictureFrame{Encoding: id3v2.EncodingUTF8, MimeType: t.Cover.MIME, PictureType: id3v2.PTFrontCover, Picture: t.Cover.Data})
 	}
 	// id3v2 writes to a temporary file and renames it over the original.
 	return tag.Save()
 }
 
-func (mp3Codec) storedTrackNumber(path string) (_ string, err error) {
-	tag, err := id3v2.Open(path, id3v2.Options{Parse: true, ParseFrames: []string{"TRCK"}})
+func (mp3Codec) storedNumbers(path string) (track, disc string, err error) {
+	tag, err := id3v2.Open(path, id3v2.Options{Parse: true, ParseFrames: []string{"TRCK", "TPOS"}})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer cleanup.Close(&err, tag)
-	return strings.TrimRight(tag.GetTextFrame("TRCK").Text, "\x00"), nil
-}
-
-func (mp3Codec) canonicalTrackNumber(t Track) string {
-	return formatTrackPair(t.TrackNumber, t.TrackTotal)
+	text := func(id string) string { return strings.TrimRight(tag.GetTextFrame(id).Text, "\x00") }
+	return text("TRCK"), text("TPOS"), nil
 }

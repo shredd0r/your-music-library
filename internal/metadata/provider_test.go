@@ -97,8 +97,8 @@ func TestDiscogsSearchAndRelease(t *testing.T) {
 		rel.Genre != "Funk / Soul" || rel.ReleaseType != "album" || rel.Barcode != "074643574518" || rel.Format != "Vinyl" {
 		t.Errorf("release = %+v", rel)
 	}
-	if len(rel.Tracks) != 10 || rel.DiscTotal() != 1 {
-		t.Fatalf("tracks = %d, discs = %d", len(rel.Tracks), rel.DiscTotal())
+	if len(rel.Tracks) != 10 || rel.Tracks[9].Disc != 1 {
+		t.Fatalf("tracks = %d, last disc = %d", len(rel.Tracks), rel.Tracks[len(rel.Tracks)-1].Disc)
 	}
 	// vinyl sides A1..B6 are numbered 1..10
 	if tr := rel.Tracks[4]; tr.Number != 5 || tr.Title != "Off The Wall" || tr.Duration != 4*time.Minute+4*time.Second || tr.Artist != "Michael Jackson" {
@@ -251,8 +251,8 @@ func TestMusicBrainzSearchAndRelease(t *testing.T) {
 		rel.Barcode != "4988010229658" || rel.Label != "Epic" || rel.Format != "CD" {
 		t.Errorf("release = %+v", rel)
 	}
-	if rel.FrontURL != "https://caa.test/release/"+otwMBID+"/front" || rel.BackURL == "" {
-		t.Errorf("cover URLs = %q %q", rel.FrontURL, rel.BackURL)
+	if rel.FrontURL != "https://caa.test/release/"+otwMBID+"/front" {
+		t.Errorf("cover URL = %q", rel.FrontURL)
 	}
 	tr := rel.Tracks[1]
 	if len(rel.Tracks) != 10 || tr.Number != 2 || tr.Disc != 1 || tr.Title != "Rock With You" || tr.ISRC != "USSM17900001" ||

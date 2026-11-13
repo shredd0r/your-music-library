@@ -19,7 +19,7 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | P2 | Plugin protocol v2: plugins keep running until `close` | superseded by P3 |
 | P3 | HTTP plugins: servers the user runs, ymlib is a client | ✅ 2026-11-06 |
 | T1 | TUI only: CLI features move into the TUI, then the CLI is removed | ⏳ |
-| T2 | One fixed tag format (no presets, no grouped singles, ASCII text), Tidy library | ⏳ |
+| T2 | One fixed tag format (no presets, no grouped singles, ASCII text, feat. in titles) | ✅ 2026-11-13 |
 | S2 | Duplicate detection polished across sources | ⏳ |
 | S3 | Batch download list (YAML file, TUI Batch screen, you pick each result) | ⏳ |
 | S4 | `This is <Artist>` playlists, generated on request | ⏳ |
@@ -166,8 +166,8 @@ Decided 2026-11-12.
 - **Dropped without replacement**, because the TUI already covers them or they go away: `tui`, `config path|show|init`, `preset list`, `singles`, `review`/`apply`/`skip`, `plugin list|enable|disable`, `search`, `download`, `queue`/`run`/`retry`/`clear`.
 - When done: CLAUDE.md (preview → `--apply` becomes preview → confirm in the TUI; layout without `internal/cli`) and README.
 
-## T2 — One fixed tag format ⏳
-Decided 2026-11-12.
+## T2 — One fixed tag format ✅
+Decided 2026-11-12, built 2026-11-13.
 - **Presets are removed.** The field set is **fixed in code**: no setting, nothing to choose. `active_preset`, `presets` and `singles` leave the config format; on first load ymlib deletes those lines from an existing `config.yaml` (keeping the rest and the comments) and says so once. Every file gets: Title, Album, Artist, Artists, Album Artist, Date, Track Number, Disc Number, Genre, and the front cover embedded at a longest side of 600 px. Not written: Picture Back. `back.jpg` is no longer saved; a full-size `cover.jpg` is still kept in the album folder. Release and source IDs (MusicBrainz, Discogs, `YMLIB_SOURCE*`) are always written.
 - **Numbers:** track and disc are two digits and have **no totals** in any format. MP3 gets `TRCK=01`, `TPOS=01`; FLAC gets `TRACKNUMBER=01`, `DISCNUMBER=01`, with no `TRACKTOTAL`/`DISCTOTAL`. File names follow: `{disc?}` gives `02-01 - Title.flac`.
 - **Multi-disc** now means the album's tracks in the library have more than one distinct disc number, or any disc ≥ 2. Accepted miss: with only disc 1 of a 2-disc album, files are named `01 - …` until disc 2 arrives, and Tidy library then renames them.
@@ -182,6 +182,16 @@ Decided 2026-11-12.
   - then moves files to their template paths.
   - Unmanaged tags (ReplayGain, lyrics, comments, other pictures) are **kept**. Existing `back.jpg` files are left alone.
 - M4A tag writing stays postponed.
+
+**As built**
+- `tags.Format(t)` applies every rule above in one pure, idempotent function. Identify, import, downloads, tag edits and `retag` all write through it, so Tidy library is just "the files Format would change". `tags.Fields` (moved from `config`) is the fixed field list; `tags.CoverMaxPx` = 600.
+- `tags.Write` never writes totals, a back cover or `YMLIB_ORIGINAL_*`, and removes them from files; `Read` still reads them so Format can see and fix old files. Disc numbers are padded like track numbers (`tags.PadNumber`); `tags.StoredNumbers` lets `retag` catch unpadded `1` or `3/12`.
+- Guests are split on the joined artist credit (`A feat. B`, `A ft. B`, `A featuring B`, `A (feat. B)`), which is how both providers print it, rather than on the providers' raw credit lists. `tags.MainArtist` does the same for duplicate checks, and matching treats `(feat. X)` in titles as noise, so downloads still match formatted files.
+- Genre/cover fill: after a confident match, only the providers *after* the chosen one are asked (earlier ones already scored below `min_score`). Review picks are not filled.
+- `config.Load` deletes `active_preset`, `singles` and `presets` (keeping the file's header comment) and lists them in `Config.Removed`; the CLI prints a note, and the TUI shows it in the status line. `Parse` ignores them.
+- Until T1: the CLI `retag` (no `--preset`) is Tidy's tag half and `organize` its move half. `ymlib preset` and `ymlib singles` are gone. Settings no longer lists presets; the tag edit form shows all fixed fields and takes plain numbers.
+- Dropped: `metadata.Release.BackURL`, `TrackTotal()`, `DiscTotal()`.
+- Verified with the real binary in temp dirs: an old config loses its preset/singles keys with the header comment kept, `retag` previews then moves `feat.` into the title and ASCII-fies the genre, `organize` renames the file.
 
 ## S2 — Duplicate detection across sources ⏳
 Tune the matching tiers once real sources and Discogs data exist (Discogs rarely has ISRC/MBID, so tier 3 does more of the work).

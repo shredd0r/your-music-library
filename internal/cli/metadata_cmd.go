@@ -103,13 +103,12 @@ func newMetadataCommands(a *app, loadConfig preRun) []*cobra.Command {
 		Use:   "identify [folder...]",
 		Short: "Look up releases (Discogs, then MusicBrainz) and tag files (preview unless --apply)",
 		Long: "Groups files by album and looks each album up. Confident matches are tagged\n" +
-			"with the active preset (whole release: all fields from one source), covers are\n" +
+			"in the fixed tag format (whole release: all fields from one source), covers are\n" +
 			"downloaded (full size to cover.jpg). Weak matches go to `ymlib review`.\n" +
 			"Files that already have a release ID are skipped unless --force.\n" +
 			"Optional folders (relative to the library) limit the run.",
 		PreRunE: loadConfig,
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
-			preset, _ := a.cfg.Preset(a.cfg.ActivePreset)
 			lib, db, err := a.openLibrary()
 			if err != nil {
 				return err
@@ -162,7 +161,7 @@ func newMetadataCommands(a *app, loadConfig preRun) []*cobra.Command {
 				fmt.Fprintln(w, "Preview only. Run again with --apply to write tags and covers.")
 				return nil
 			}
-			r, err := lib.ApplyIdentify(ctx, plan, preset, ms.images)
+			r, err := lib.ApplyIdentify(ctx, plan, ms.images)
 			if err != nil {
 				return err
 			}
@@ -264,7 +263,6 @@ func newReviewCommand(a *app, loadConfig preRun) *cobra.Command {
 			if err := errors.Join(err1, err2); err != nil {
 				return fmt.Errorf("usage: ymlib review apply <id> <candidate>: %w", err)
 			}
-			preset, _ := a.cfg.Preset(a.cfg.ActivePreset)
 			lib, db, err := a.openLibrary()
 			if err != nil {
 				return err
@@ -285,7 +283,7 @@ func newReviewCommand(a *app, loadConfig preRun) *cobra.Command {
 				fmt.Fprintln(w, "Preview only. Run again with --apply to write tags and covers.")
 				return nil
 			}
-			r, err := lib.ApplyResolve(ctx, id, am, preset, ms.images)
+			r, err := lib.ApplyResolve(ctx, id, am, ms.images)
 			if err != nil {
 				return err
 			}

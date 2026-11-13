@@ -16,7 +16,7 @@ type Picture struct {
 }
 
 // Identity holds IDs used to recognize a recording again ("already
-// downloaded"). They are written regardless of the preset.
+// downloaded"). They are always written.
 type Identity struct {
 	Source           string // source plugin name
 	SourceTrackID    string // ID within that source
@@ -35,20 +35,24 @@ type Track struct {
 	AlbumArtist string
 	Date        string // YYYY, YYYY-MM or YYYY-MM-DD
 	TrackNumber int
-	TrackTotal  int
 	DiscNumber  int
-	DiscTotal   int
 	Genre       string
 	Cover       *Picture
-	Back        *Picture
+
+	// TrackTotal, DiscTotal and Back are read from files written by other
+	// tools (or older ymlib versions) but never written: Format clears
+	// them and Write drops them.
+	TrackTotal int
+	DiscTotal  int
+	Back       *Picture
 
 	// ReleaseType uses the MusicBrainz vocabulary: album, single, ep, ...
 	ReleaseType string
 	IDs         Identity
 
-	// OriginalAlbum and OriginalTrack remember a single's own release when
-	// it is moved into a grouped "<Artist> Singles" album, so the change
-	// can be undone.
+	// OriginalAlbum and OriginalTrack were written by the removed grouped
+	// singles mode ("<Artist> Singles"). They are only read, so Format can
+	// restore the single's own album; Write drops them.
 	OriginalAlbum string
 	OriginalTrack int
 }
@@ -82,38 +86,24 @@ func parseNumberPair(s string) (n, total int) {
 	return n, total
 }
 
+// formatNumberPair shows a zero-padded number with its total, if any:
+// "01", "01/11". Totals are only read, never written; Diff shows them so
+// their removal is visible.
 func formatNumberPair(n, total int) string {
 	if n == 0 {
 		return ""
 	}
 	if total == 0 {
-		return strconv.Itoa(n)
+		return PadNumber(n)
 	}
-	return strconv.Itoa(n) + "/" + strconv.Itoa(total)
+	return PadNumber(n) + "/" + strconv.Itoa(total)
 }
 
-// padTrack formats a track number with at least two digits: 01, 10, 104.
-func padTrack(n int) string {
+// PadNumber formats a track or disc number as Write stores it: at least
+// two digits (01, 10, 104); 0 is "".
+func PadNumber(n int) string {
 	if n == 0 {
 		return ""
 	}
 	return fmt.Sprintf("%02d", n)
-}
-
-// formatTrackPair is formatNumberPair with a zero-padded track number.
-func formatTrackPair(n, total int) string {
-	if n == 0 {
-		return ""
-	}
-	if total == 0 {
-		return padTrack(n)
-	}
-	return padTrack(n) + "/" + strconv.Itoa(total)
-}
-
-func itoaOrEmpty(n int) string {
-	if n == 0 {
-		return ""
-	}
-	return strconv.Itoa(n)
 }

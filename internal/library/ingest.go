@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"your-music-library/internal/cleanup"
-	"your-music-library/internal/config"
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/pathtmpl"
 	"your-music-library/internal/tags"
@@ -216,11 +215,11 @@ type IngestReport struct {
 }
 
 // ApplyIngest copies each file into a staging folder inside the library,
-// writes its tags (release, covers, preset) and only then moves it to its
+// writes its tags (release, cover, fixed format) and only then moves it to its
 // target, so nothing half-done ever appears in the library. Files that
 // fail stay where they were; with Move, sources are deleted only after
 // their import succeeded.
-func (l *Library) ApplyIngest(ctx context.Context, plan IngestPlan, preset config.Preset, images ImageSource, opts IngestOptions) (r IngestReport, err error) {
+func (l *Library) ApplyIngest(ctx context.Context, plan IngestPlan, images ImageSource, opts IngestOptions) (r IngestReport, err error) {
 	stage := path.Join(StagingDir, "import-"+strconv.FormatInt(l.now().UnixNano(), 36))
 	if err := os.MkdirAll(l.abs(stage), 0o755); err != nil {
 		return r, err
@@ -230,14 +229,14 @@ func (l *Library) ApplyIngest(ctx context.Context, plan IngestPlan, preset confi
 		err = errors.Join(err, cleanup.RemoveIfEmpty(l.abs(stage)), cleanup.RemoveIfEmpty(l.abs(StagingDir)))
 	}()
 
-	covers := map[int][2]*tags.Picture{}
+	covers := map[int]*tags.Picture{}
 	final := map[string]string{} // display -> library path
 	for i, it := range plan.Items {
 		if err := ctx.Err(); err != nil {
 			return r, err
 		}
 		staged := path.Join(stage, strconv.Itoa(i)+strings.ToLower(filepath.Ext(it.Source)))
-		if err := l.ingestOne(ctx, it, staged, plan, preset, images, covers, &r); err != nil {
+		if err := l.ingestOne(ctx, it, staged, plan, images, covers, &r); err != nil {
 			err = errors.Join(err, cleanup.Remove(l.abs(staged)))
 			if _, derr := l.db.ExecContext(ctx, "DELETE FROM tracks WHERE path = ?", staged); derr != nil {
 				err = errors.Join(err, derr)
@@ -272,8 +271,8 @@ func (l *Library) ApplyIngest(ctx context.Context, plan IngestPlan, preset confi
 	return r, nil
 }
 
-func (l *Library) ingestOne(ctx context.Context, it IngestItem, staged string, plan IngestPlan, preset config.Preset,
-	images ImageSource, covers map[int][2]*tags.Picture, r *IngestReport) error {
+func (l *Library) ingestOne(ctx context.Context, it IngestItem, staged string, plan IngestPlan,
+	images ImageSource, covers map[int]*tags.Picture, r *IngestReport) error {
 	if err := placeFile(it.Source, l.abs(staged), strings.HasPrefix(it.Source, l.abs(StagingDir)+string(filepath.Separator))); err != nil {
 		return err
 	}
@@ -283,11 +282,11 @@ func (l *Library) ingestOne(ctx context.Context, it IngestItem, staged string, p
 		c, ok := covers[it.match]
 		if !ok {
 			var rep IdentifyReport
-			c[0], c[1] = l.fetchCovers(ctx, am.Release, images, &rep)
+			c = l.fetchCover(ctx, am.Release, images, &rep)
 			covers[it.match] = c
 			r.Warnings = append(r.Warnings, rep.Warnings...)
 		}
-		if err := l.writeRelease(ctx, staged, am.Release, it.track, c[0], c[1], preset, imageDir); err != nil {
+		if err := l.writeRelease(ctx, staged, am.Release, it.track, c, imageDir); err != nil {
 			return err
 		}
 	} else {
@@ -295,7 +294,7 @@ func (l *Library) ingestOne(ctx context.Context, it IngestItem, staged string, p
 		if err != nil {
 			return err
 		}
-		if err := l.writeWithPreset(ctx, staged, cur, preset, imageDir); err != nil {
+		if err := l.writeFormatted(ctx, staged, cur, imageDir); err != nil {
 			return err
 		}
 	}

@@ -2,6 +2,9 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"your-music-library/internal/config"
@@ -38,16 +41,20 @@ func newRoot(a *app) *cobra.Command {
 
 	// loadConfig is attached to commands that need a valid config; `config
 	// init` and `config path` deliberately work without one.
-	loadConfig := func(*cobra.Command, []string) error {
+	loadConfig := func(cmd *cobra.Command, _ []string) error {
 		c, err := config.Load(a.configPath)
 		if err != nil {
 			return err
+		}
+		if len(c.Removed) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "note: removed %s from %s: presets and the singles mode no longer exist\n",
+				strings.Join(c.Removed, ", "), a.configPath)
 		}
 		a.cfg = c
 		return nil
 	}
 
-	root.AddCommand(newConfigCommand(a, loadConfig), newPresetCommand(a, loadConfig))
+	root.AddCommand(newConfigCommand(a, loadConfig))
 	root.AddCommand(newLibraryCommands(a, loadConfig)...)
 	root.AddCommand(newMetadataCommands(a, loadConfig)...)
 	root.AddCommand(newDownloadCommands(a, loadConfig)...)

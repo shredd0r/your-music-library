@@ -10,8 +10,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/library"
+	"your-music-library/internal/tags"
 )
 
 type libraryMsg struct {
@@ -252,24 +252,14 @@ func (m *libScreen) startEdit() tea.Cmd {
 	if a == nil {
 		return nil
 	}
-	p := m.s.preset()
 	fields, tracks := library.AlbumFields, a.tracks
 	title := fmt.Sprintf("Edit album %s — %s (%d tracks)", a.artist, a.title, len(a.tracks))
 	if m.onTracks {
 		fields, tracks = library.EditableFields, a.tracks[m.tcursor:m.tcursor+1]
 		title = "Edit track " + tracks[0].Path
 	}
-	var shown []config.Field
-	for _, f := range fields {
-		if p.Has(f) {
-			shown = append(shown, f)
-		}
-	}
-	if len(shown) == 0 {
-		return status("preset %q writes none of these fields", p.Name)
-	}
 	var cmd tea.Cmd
-	m.form, cmd = newEditForm(m.s, title, tracks, shown)
+	m.form, cmd = newEditForm(m.s, title, tracks, fields)
 	return cmd
 }
 
@@ -349,8 +339,8 @@ func (m *libScreen) detail(w, h int) []string {
 	tagLines := []string{
 		field("Title", t.Title), field("Artist", t.Artist), field("Artists", strings.Join(t.Artists, "; ")),
 		field("Album Artist", t.AlbumArtist), field("Date", t.Date),
-		field("Track", library.FieldValue(t.Track, config.FieldTrackNumber)),
-		field("Disc", library.FieldValue(t.Track, config.FieldDiscNumber)),
+		field("Track", library.FieldValue(t.Track, tags.FieldTrackNumber)),
+		field("Disc", library.FieldValue(t.Track, tags.FieldDiscNumber)),
 		field("Genre", t.Genre), field("File", path.Base(t.Path)),
 		field("Size", fmt.Sprintf("%.1f MB", float64(t.Size)/1e6)),
 	}

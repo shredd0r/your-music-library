@@ -2,7 +2,6 @@ package tags
 
 import (
 	"bytes"
-	"image"
 	"image/color"
 	_ "image/jpeg"
 	"path/filepath"
@@ -16,7 +15,6 @@ import (
 	"github.com/go-flac/flacvorbis/v2"
 	flac "github.com/go-flac/go-flac/v2"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/testutil"
 )
 
@@ -46,10 +44,14 @@ func TestRoundTrip(t *testing.T) {
 	for _, ext := range []string{"flac", "mp3"} {
 		t.Run(ext, func(t *testing.T) {
 			path := testutil.CopyAudio(t, ext, filepath.Join(t.TempDir(), "a."+ext))
-			want := sampleTrack(t)
-			if err := Write(path, want); err != nil {
+			tr := sampleTrack(t)
+			if err := Write(path, tr); err != nil {
 				t.Fatal(err)
 			}
+			// Write never stores totals, a back cover or grouping tags.
+			want := tr
+			want.TrackTotal, want.DiscTotal, want.Back = 0, 0, nil
+			want.OriginalAlbum, want.OriginalTrack = "", 0
 			got, err := Read(path)
 			if err != nil {
 				t.Fatal(err)
@@ -185,44 +187,6 @@ func TestUnsupportedFormat(t *testing.T) {
 	}
 }
 
-func TestApplyPreset(t *testing.T) {
-	tr := sampleTrack(t)
-	tr.Cover = &Picture{MIME: "image/jpeg", Data: testutil.JPEG(t, 1200, 800, color.RGBA{0, 255, 0, 255})}
-	mp3 := config.Default().Presets["mp3-player"]
-
-	got, err := ApplyPreset(tr, mp3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Artists != nil || got.Back != nil {
-		t.Errorf("Artists/Back should be removed: %+v", got)
-	}
-	if got.Title != tr.Title || got.Genre != tr.Genre || got.DiscNumber != 1 {
-		t.Errorf("kept fields changed: %+v", got)
-	}
-	if got.IDs != tr.IDs || got.ReleaseType != tr.ReleaseType || got.OriginalAlbum != tr.OriginalAlbum {
-		t.Error("identity and internal fields must survive any preset")
-	}
-	img, _, err := image.Decode(bytes.NewReader(got.Cover.Data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b := img.Bounds(); b.Dx() != 600 || b.Dy() != 400 {
-		t.Errorf("cover resized to %dx%d, want 600x400", b.Dx(), b.Dy())
-	}
-	// input must not be mutated
-	if tr.Artists == nil || tr.Back == nil {
-		t.Error("ApplyPreset mutated its input")
-	}
-
-	// small covers are left untouched
-	small := sampleTrack(t)
-	got, _ = ApplyPreset(small, mp3)
-	if !bytes.Equal(got.Cover.Data, small.Cover.Data) {
-		t.Error("small cover was re-encoded")
-	}
-}
-
 func TestDiff(t *testing.T) {
 	a := sampleTrack(t)
 	b := a
@@ -231,9 +195,9 @@ func TestDiff(t *testing.T) {
 	b.Genre = "Rock"
 	changes := Diff(a, b)
 	want := []Change{
-		{Field: config.FieldArtists, Old: "Michael Jackson; Siedah Garrett", New: ""},
-		{Field: config.FieldGenre, Old: "Pop", New: "Rock"},
-		{Field: config.FieldPictureBack, Old: "image/jpeg 10x10", New: ""},
+		{Field: FieldArtists, Old: "Michael Jackson; Siedah Garrett", New: ""},
+		{Field: FieldGenre, Old: "Pop", New: "Rock"},
+		{Field: FieldPictureBack, Old: "image/jpeg 10x10", New: ""},
 	}
 	if !reflect.DeepEqual(changes, want) {
 		t.Errorf("Diff =\n%+v\nwant\n%+v", changes, want)
@@ -354,50 +318,60 @@ func pictureTypes(t *testing.T, path string) []int {
 	return out
 }
 
-func TestTrackNumberIsZeroPadded(t *testing.T) {
+func TestNumbersAreZeroPaddedWithoutTotals(t *testing.T) {
 	cases := []struct {
-		ext      string
-		n, total int
-		want     string
+		ext                string
+		track, disc        int
+		wantTrack, wantDsc string
 	}{
-		{"flac", 1, 11, "01"},
-		{"flac", 10, 0, "10"},
-		{"flac", 104, 120, "104"},
-		{"mp3", 1, 11, "01/11"},
-		{"mp3", 7, 0, "07"},
+		{"flac", 1, 1, "01", "01"},
+		{"flac", 104, 12, "104", "12"},
+		{"mp3", 1, 2, "01", "02"},
+		{"mp3", 7, 0, "07", ""},
 	}
 	for _, c := range cases {
 		path := testutil.CopyAudio(t, c.ext, filepath.Join(t.TempDir(), "a."+c.ext))
-		if err := Write(path, Track{TrackNumber: c.n, TrackTotal: c.total}); err != nil {
+		if err := Write(path, Track{TrackNumber: c.track, TrackTotal: 20, DiscNumber: c.disc, DiscTotal: 2}); err != nil {
 			t.Fatal(err)
 		}
-		stored, err := StoredTrackNumber(path)
-		if err != nil || stored != c.want {
-			t.Errorf("%s %d/%d: stored %q, %v; want %q", c.ext, c.n, c.total, stored, err, c.want)
+		track, disc, err := StoredNumbers(path)
+		if err != nil || track != c.wantTrack || disc != c.wantDsc {
+			t.Errorf("%s %d/%d: stored %q/%q, %v; want %q/%q", c.ext, c.track, c.disc, track, disc, err, c.wantTrack, c.wantDsc)
 		}
 		got, _ := Read(path)
-		if got.TrackNumber != c.n || got.TrackTotal != c.total {
-			t.Errorf("%s: read back %d/%d", c.ext, got.TrackNumber, got.TrackTotal)
+		if got.TrackNumber != c.track || got.DiscNumber != c.disc || got.TrackTotal != 0 || got.DiscTotal != 0 {
+			t.Errorf("%s: read back %+v", c.ext, got)
 		}
-		if want, _ := CanonicalTrackNumber(path, got); want != c.want {
-			t.Errorf("%s: CanonicalTrackNumber = %q, want %q", c.ext, want, c.want)
+		if PadNumber(c.track) != c.wantTrack || PadNumber(c.disc) != c.wantDsc {
+			t.Errorf("PadNumber(%d, %d) = %q, %q", c.track, c.disc, PadNumber(c.track), PadNumber(c.disc))
 		}
 	}
 }
 
-func TestApplyPresetShrinksBackCoverToo(t *testing.T) {
-	tr := Track{
-		Cover: &Picture{MIME: "image/jpeg", Data: testutil.JPEG(t, 1500, 1500, color.White)},
-		Back:  &Picture{MIME: "image/jpeg", Data: testutil.JPEG(t, 1200, 900, color.Black)},
+func TestWriteRemovesOldTotalsAndBackCover(t *testing.T) {
+	path := testutil.CopyAudio(t, "flac", filepath.Join(t.TempDir(), "a.flac"))
+	f, _ := flac.ParseFile(path)
+	c := flacvorbis.New()
+	c.Comments = append(c.Comments, "TRACKNUMBER=3", "TRACKTOTAL=12", "DISCTOTAL=2", "YMLIB_ORIGINAL_ALBUM=X")
+	b := c.Marshal()
+	f.Meta = append(f.Meta, &b)
+	f.Save(path + ".tmp")
+	f.Close()
+	replace(t, path+".tmp", path)
+	addRawPicture(t, path, 4, testutil.JPEG(t, 5, 5, color.Black))
+
+	got, _ := Read(path)
+	if got.TrackTotal != 12 || got.Back == nil || got.OriginalAlbum != "X" {
+		t.Fatalf("old tags not read: %+v", got)
 	}
-	got, err := ApplyPreset(tr, config.Default().Presets["full"])
-	if err != nil {
+	if err := Write(path, got); err != nil {
 		t.Fatal(err)
 	}
-	for name, p := range map[string]*Picture{"front": got.Cover, "back": got.Back} {
-		cfg, _, err := image.DecodeConfig(bytes.NewReader(p.Data))
-		if err != nil || max(cfg.Width, cfg.Height) != 600 {
-			t.Errorf("%s cover %dx%d, want longest side 600", name, cfg.Width, cfg.Height)
-		}
+	comments := flacComments(t, path)
+	if !reflect.DeepEqual(comments, []string{"TRACKNUMBER=03"}) {
+		t.Errorf("comments = %v", comments)
+	}
+	if types := pictureTypes(t, path); len(types) != 0 {
+		t.Errorf("picture types = %v, want none", types)
 	}
 }

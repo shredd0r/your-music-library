@@ -86,7 +86,7 @@ func TestOrganizeMultiDisc(t *testing.T) {
 	for _, m := range plan(t, l).Moves {
 		got[m.From] = m.To
 	}
-	if got["a.flac"] != "Pink Floyd/The Wall/1-01 - In the Flesh_.flac" || got["b.flac"] != "Pink Floyd/The Wall/2-01 - Hey You.flac" {
+	if got["a.flac"] != "Pink Floyd/The Wall/01-01 - In the Flesh_.flac" || got["b.flac"] != "Pink Floyd/The Wall/02-01 - Hey You.flac" {
 		t.Errorf("moves = %v", got)
 	}
 }

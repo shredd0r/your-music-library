@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"your-music-library/internal/metadata"
+	"your-music-library/internal/tags"
 )
 
 // DupStatus says whether something is already in the library.
@@ -76,8 +77,10 @@ func (d *DupIndex) Add(e Entry) {
 	}
 }
 
+// titleKey ignores guests ("A feat. B" and a "(feat. B)" title suffix),
+// since Format moves them from the artist into the title.
 func titleKey(artist, title string) string {
-	return metadata.Normalize(artist) + "\x00" + metadata.NormalizeTitle(title)
+	return metadata.Normalize(tags.MainArtist(artist)) + "\x00" + metadata.NormalizeTitle(title)
 }
 
 func uniqueNonEmpty(xs ...string) []string {
@@ -91,14 +94,13 @@ func uniqueNonEmpty(xs ...string) []string {
 }
 
 // sameAlbum compares album names exactly (after normalization), so a
-// remaster or deluxe edition counts as another edition. Grouped singles
-// are compared by their original album too.
+// remaster or deluxe edition counts as another edition.
 func sameAlbum(q DupQuery, e Entry) bool {
 	want := metadata.Normalize(q.Album)
 	if want == "" {
 		return true // nothing to tell editions apart
 	}
-	return want == metadata.Normalize(e.Album) || (e.OriginalAlbum != "" && want == metadata.Normalize(e.OriginalAlbum))
+	return want == metadata.Normalize(e.Album)
 }
 
 // Check returns the status of q and the matching file, if any.

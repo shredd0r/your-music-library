@@ -414,21 +414,24 @@ func addReview(h *harness, paths []string, cands []metadata.Match) {
 	}
 }
 
-func TestSettingsSwitchPreset(t *testing.T) {
+func TestSettingsShowsConfigFileAndFixedTags(t *testing.T) {
 	h := newHarness(t, nil)
 	h.keys("esc", "5")
-	h.wantScreen("Library", "* full", "mp3-player")
-	h.keys("down", "enter")
-	if !strings.Contains(h.status(), `active preset is now "mp3-player"`) {
-		t.Fatalf("status = %q", h.status())
+	h.wantScreen("Config file", "Library", "fixed set, front cover ≤600 px")
+	if !strings.Contains(h.screen(), filepath.Base(h.cfgPath)) {
+		t.Errorf("config path not shown:\n%s", h.screen())
 	}
-	data, _ := os.ReadFile(h.cfgPath)
-	if !strings.Contains(string(data), "active_preset: mp3-player") || !strings.Contains(string(data), "# test config") {
-		t.Errorf("config file:\n%s", data)
+	if strings.Contains(h.screen(), "Presets") {
+		t.Error("presets no longer exist")
 	}
-	h.wantScreen("* mp3-player")
-	if h.app.s.preset().Name != "mp3-player" {
-		t.Errorf("preset in use = %q", h.app.s.preset().Name)
+}
+
+func TestRemovedSettingsAreReported(t *testing.T) {
+	h := newHarness(t, nil)
+	h.app.s.cfg.Removed = []string{"active_preset", "singles"}
+	h.run(h.app.Init())
+	if st := h.status(); !strings.Contains(st, "active_preset, singles") || !strings.Contains(st, "no longer exist") {
+		t.Errorf("status = %q", st)
 	}
 }
 
@@ -436,7 +439,7 @@ func TestSettingsTogglePlugin(t *testing.T) {
 	h := newHarness(t, nil)
 	h.keys("esc", "5")
 	h.wantScreen("Plugins", "fake", "enabled", "online (fake 1.0)", h.srv.URL)
-	h.keys("up", "enter") // the plugin row is above the presets
+	h.keys("enter")
 	if !strings.Contains(h.status(), "fake is disabled") {
 		t.Fatalf("status = %q", h.status())
 	}

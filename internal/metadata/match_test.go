@@ -16,11 +16,16 @@ func TestNormalizeAndSimilarity(t *testing.T) {
 		{"Let It Be (Remastered 2009)", "Let It Be"},
 		{"Bad - 2012 Remaster", "Bad"},
 		{"Thriller [Deluxe Edition]", "Thriller"},
+		{"I Just Can't Stop Loving You (feat. Siedah Garrett)", "I Just Can't Stop Loving You"},
+		{"Song [ft. B]", "Song"},
 	}
 	for _, p := range eq {
 		if s := similarity(p[0], p[1]); s != 1 {
 			t.Errorf("similarity(%q, %q) = %.3f, want 1", p[0], p[1], s)
 		}
+	}
+	if s := similarity("Defeated (Live)", "Defeated"); s == 1 {
+		t.Error(`"feat" inside a word is not a guest credit`)
 	}
 	if s := similarity("Bad", "Thriller"); s > 0.3 {
 		t.Errorf("unrelated titles too similar: %.3f", s)
@@ -111,6 +116,7 @@ func (f *fakeProvider) Release(_ context.Context, id string) (Release, error) {
 func TestIdentifyChain(t *testing.T) {
 	q := Query{Artist: "Michael Jackson", Album: "Off the Wall", Tracks: []QueryTrack{{Title: "Rock With You", Number: 2}}}
 	good := offTheWall()
+	good.Genre, good.FrontURL = "Funk / Soul", "https://img/otw.jpg"
 	deluxe := offTheWall()
 	deluxe.ID = "deluxe"
 	deluxe.Title = "Off the Wall (Special Edition)"
@@ -159,6 +165,35 @@ func TestIdentifyChain(t *testing.T) {
 		b := &fakeProvider{name: "musicbrainz", err: errors.New("down too")}
 		if _, err := (&Identifier{Providers: []Provider{a, b}, MinScore: 0.85}).Identify(context.Background(), q); err == nil {
 			t.Error("expected error")
+		}
+	})
+
+	t.Run("missing genre and cover are filled from a later provider", func(t *testing.T) {
+		bare := good
+		bare.Genre, bare.FrontURL = "", ""
+		mb := good
+		mb.Provider, mb.Genre, mb.FrontURL = "musicbrainz", "Disco", "https://caa/front"
+		a := &fakeProvider{name: "discogs", cands: []Candidate{{ID: "otw"}}, releases: map[string]Release{"otw": bare}}
+		b := &fakeProvider{name: "musicbrainz", cands: []Candidate{{ID: "mb"}}, releases: map[string]Release{"mb": mb}}
+		res, err := (&Identifier{Providers: []Provider{a, b}, MinScore: 0.85}).Identify(context.Background(), q)
+		if err != nil || res.Best == nil {
+			t.Fatalf("res = %+v, %v", res, err)
+		}
+		if r := res.Best.Release; r.ID != "otw" || r.Genre != "Disco" || r.FrontURL != "https://caa/front" {
+			t.Errorf("best = %s, genre %q, cover %q", r.ID, r.Genre, r.FrontURL)
+		}
+	})
+
+	t.Run("fill takes nothing from a weak match", func(t *testing.T) {
+		bare := good
+		bare.Genre, bare.FrontURL = "", ""
+		other := good
+		other.Artist, other.Title, other.Genre, other.FrontURL = "Tribute Band", "Covers", "Karaoke", "https://x/front"
+		a := &fakeProvider{name: "discogs", cands: []Candidate{{ID: "otw"}}, releases: map[string]Release{"otw": bare}}
+		b := &fakeProvider{name: "musicbrainz", cands: []Candidate{{ID: "x"}}, releases: map[string]Release{"x": other}}
+		res, _ := (&Identifier{Providers: []Provider{a, b}, MinScore: 0.85}).Identify(context.Background(), q)
+		if r := res.Best.Release; r.Genre != "" || r.FrontURL != "" {
+			t.Errorf("took genre %q, cover %q from a weak match", r.Genre, r.FrontURL)
 		}
 	})
 

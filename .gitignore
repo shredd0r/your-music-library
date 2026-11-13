@@ -26,6 +26,8 @@ spikes/tagspike/*.mp3
 .env
 .env.*
 
+graphify-out/
+
 # OS / editors
 .DS_Store
 .idea/

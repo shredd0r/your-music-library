@@ -12,7 +12,7 @@ func TestDupIndex(t *testing.T) {
 	addFile(t, l, "mj/bad.flac", tags.Track{Title: "Bad", Artist: "Michael Jackson", Album: "Bad",
 		IDs: tags.Identity{Source: "fake", SourceTrackID: "t9", ISRC: "USSM18700359"}})
 	addFile(t, l, "mj/rwy.flac", tags.Track{Title: "Rock With You", Artist: "Michael Jackson", AlbumArtist: "Michael Jackson", Album: "Off the Wall"})
-	addFile(t, l, "ado/u.flac", tags.Track{Title: "Usseewa", Artist: "Ado", Album: "Ado Singles", OriginalAlbum: "Usseewa"})
+	addFile(t, l, "ado/s.flac", tags.Track{Title: "Show (feat. B)", Artist: "Ado", Album: "Show"})
 	scan(t, l)
 	d, err := l.DupIndex(context.Background())
 	if err != nil {
@@ -31,7 +31,7 @@ func TestDupIndex(t *testing.T) {
 		{"names, typographic quotes and case", DupQuery{Artist: "michael jackson", Album: "Off The Wall", Title: "Rock with You"}, InLibrary, "mj/rwy.flac"},
 		{"remaster is another edition", DupQuery{Artist: "Michael Jackson", Album: "Off the Wall (2016 Remaster)", Title: "Rock With You - 2016 Remaster"}, OtherEdition, "mj/rwy.flac"},
 		{"no album given", DupQuery{Artist: "Michael Jackson", Title: "Rock With You"}, InLibrary, "mj/rwy.flac"},
-		{"grouped single by original album", DupQuery{Artist: "Ado", Album: "Usseewa", Title: "Usseewa"}, InLibrary, "ado/u.flac"},
+		{"guest moved into the title", DupQuery{Artist: "Ado feat. B", Album: "Show", Title: "Show"}, InLibrary, "ado/s.flac"},
 		{"unknown", DupQuery{Artist: "Michael Jackson", Album: "Bad", Title: "Smooth Criminal"}, NotInLibrary, ""},
 	}
 	for _, c := range cases {

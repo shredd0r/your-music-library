@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-**ymlib** is a personal music library manager written in Go. It imports and downloads music (through source plugins: HTTP servers the user runs), writes tags according to user presets, organizes files with a path template, and has a CLI plus a Bubble Tea TUI. Planned (see MILESTONES.md): T1 makes ymlib TUI-only (the CLI is removed), T2 replaces presets with one fixed tag format, then batch downloads (S3) and device sync (S5), then `This is <Artist>` playlists (S4).
+**ymlib** is a personal music library manager written in Go. It imports and downloads music (through source plugins: HTTP servers the user runs), writes tags in one fixed format (`tags.Format`, no presets), organizes files with a path template, and has a CLI plus a Bubble Tea TUI. Planned (see MILESTONES.md): T1 makes ymlib TUI-only (the CLI is removed), then batch downloads (S3), device sync (S5) and `This is <Artist>` playlists (S4).
 
 ## Start here
 - `MILESTONES.md`: roadmap, status of each milestone, open questions. **Read it first, and update its status table and sections when a milestone (or part of one) is finished.**
@@ -25,10 +25,10 @@ For manual runs, don't touch the user's real `~/.config` or `~/.local/share`. Po
 ```
 cmd/ymlib/          main: resolves platform.Dirs, runs cli.NewRootCommand
 internal/cli        cobra commands; each takes injected platform.Dirs (tests use t.TempDir)
-internal/config     config.yaml: fields, built-in + user presets, validation, Marshal
-internal/tags       Track model; FLAC/MP3 read/write (only managed tags); ApplyPreset, Diff
+internal/config     config.yaml: fields, validation, Marshal; Load deletes deprecated keys (presets, singles)
+internal/tags       Track model; FLAC/MP3 read/write (only managed tags); Format (the fixed tag format), Diff
 internal/pathtmpl   path template parse/render + FAT32-safe name cleaning (no internal imports)
-internal/library    Scan; Plan/Apply for organize, retag, singles, identify, ingest (import/downloads); duplicates; reviews
+internal/library    Scan; Plan/Apply for organize, retag (to the fixed format), identify, ingest (import/downloads), tag edits; duplicates; reviews
 internal/metadata   Provider interface, Discogs + MusicBrainz clients, matching/scoring, Identifier chain
 internal/cache      two-level cache (memory + SQLite cache_entries) and cover file cache
 internal/secrets    API tokens: OS keychain, env var override

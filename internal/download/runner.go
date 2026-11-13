@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"your-music-library/internal/cleanup"
-	"your-music-library/internal/config"
 	"your-music-library/internal/library"
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/queue"
@@ -31,7 +30,6 @@ type Runner struct {
 	Lib        *library.Library
 	Identifier *metadata.Identifier // nil: keep the source's tags
 	Images     library.ImageSource  // nil: no cover downloads
-	Preset     config.Preset
 	Parallel   int
 	Force      bool // download tracks that are already in the library
 	Verify     Verifier
@@ -461,7 +459,7 @@ func (r *Runner) ingest(ctx context.Context, files []string) map[string]outcome 
 	for _, u := range plan.Unsupported {
 		out[src(u)] = outcome{err: Permanent(fmt.Errorf("unsupported format"))}
 	}
-	rep, err := r.Lib.ApplyIngest(ctx, plan, r.Preset, r.Images, opts)
+	rep, err := r.Lib.ApplyIngest(ctx, plan, r.Images, opts)
 	for _, w := range rep.Warnings {
 		r.logf("! %s", w)
 	}

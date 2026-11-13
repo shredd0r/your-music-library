@@ -3,8 +3,8 @@
 //
 // Variables: albumartist (falls back to artist), artist, album, title,
 // genre, year, date, track, disc, ext. Numeric variables (track, disc,
-// year) accept a zero-pad width: {track:02}. {disc?} renders "<disc>-" only
-// for multi-disc albums. Every value is cleaned to be safe on FAT32 and
+// year) accept a zero-pad width: {track:02}. {disc?} renders "02-" (always
+// two digits) only for multi-disc albums. Every value is cleaned to be safe on FAT32 and
 // exFAT, so files can be copied to SD cards and players.
 package pathtmpl
 
@@ -27,14 +27,15 @@ const maxValueBytes = 180
 
 // Values are the inputs to a template.
 type Values struct {
-	AlbumArtist            string
-	Artist                 string
-	Album                  string
-	Title                  string
-	Genre                  string
-	Date                   string // year is taken from it
-	Track, Disc, DiscTotal int
-	Ext                    string // without dot
+	AlbumArtist string
+	Artist      string
+	Album       string
+	Title       string
+	Genre       string
+	Date        string // year is taken from it
+	Track, Disc int
+	DiscTotal   int    // discs of the album; {disc?} needs > 1
+	Ext         string // without dot
 }
 
 type part struct {
@@ -172,7 +173,7 @@ func value(p part, v Values) string {
 	switch p.name {
 	case "disc?":
 		if v.DiscTotal > 1 && v.Disc > 0 {
-			return strconv.Itoa(v.Disc) + "-"
+			return pad(v.Disc, 2) + "-"
 		}
 		return ""
 	case "track":

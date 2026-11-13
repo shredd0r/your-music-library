@@ -187,7 +187,6 @@ type mbRelease struct {
 	} `json:"label-info"`
 	CoverArtArchive struct {
 		Front bool `json:"front"`
-		Back  bool `json:"back"`
 	} `json:"cover-art-archive"`
 	Media []struct {
 		Position int    `json:"position"`
@@ -231,9 +230,6 @@ func (m *MusicBrainz) Release(ctx context.Context, id string) (Release, error) {
 	}
 	if r.CoverArtArchive.Front {
 		rel.FrontURL = m.caaBase + "/release/" + r.ID + "/front"
-	}
-	if r.CoverArtArchive.Back {
-		rel.BackURL = m.caaBase + "/release/" + r.ID + "/back"
 	}
 	for _, md := range r.Media {
 		for _, t := range md.Tracks {

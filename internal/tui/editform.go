@@ -7,8 +7,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/library"
+	"your-music-library/internal/tags"
 )
 
 type (
@@ -28,7 +28,7 @@ type editForm struct {
 	s      *shared
 	title  string
 	paths  []string
-	fields []config.Field
+	fields []tags.Field
 	inputs []textinput.Model
 	orig   []string
 	focus  int
@@ -39,7 +39,7 @@ type editForm struct {
 
 // newEditForm prefills fields with the value shared by all tracks; mixed
 // values start empty and are kept unless something is typed.
-func newEditForm(s *shared, title string, tracks []library.Entry, fields []config.Field) (*editForm, tea.Cmd) {
+func newEditForm(s *shared, title string, tracks []library.Entry, fields []tags.Field) (*editForm, tea.Cmd) {
 	f := &editForm{s: s, title: title}
 	for _, e := range tracks {
 		f.paths = append(f.paths, e.Path)
@@ -174,7 +174,7 @@ func (f *editForm) view(w, h int) string {
 		for _, in := range f.inputs {
 			lines = append(lines, in.View())
 		}
-		lines = append(lines, "", stDim.Render("Only fields of the active preset are shown. Empty removes the tag."))
+		lines = append(lines, "", stDim.Render("Empty removes the tag. Text is saved in ASCII; a guest in Artist (feat.) moves into the title."))
 		return strings.Join(lines, "\n")
 	}
 	lines[0] = stBold.Render(f.title + ": preview")
@@ -193,7 +193,7 @@ func (f *editForm) view(w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-func changeLine(f config.Field, old, new string) string {
+func changeLine(f tags.Field, old, new string) string {
 	if old == "" {
 		old = "(none)"
 	}

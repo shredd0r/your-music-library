@@ -14,10 +14,8 @@ import (
 type codec interface {
 	read(path string) (Track, error)
 	write(path string, t Track) error
-	// storedTrackNumber returns the track number tag exactly as stored.
-	storedTrackNumber(path string) (string, error)
-	// canonicalTrackNumber is how write stores t's track number.
-	canonicalTrackNumber(t Track) string
+	// storedNumbers returns the track and disc number tags exactly as stored.
+	storedNumbers(path string) (track, disc string, err error)
 }
 
 var codecs = map[string]codec{
@@ -89,25 +87,15 @@ func Write(path string, t Track) error {
 	return nil
 }
 
-// StoredTrackNumber returns the file's track number tag as text, e.g. "3"
-// or "3/12". Read parses that into numbers, so this is how callers notice
-// files whose tag is not yet in the canonical zero-padded form.
-func StoredTrackNumber(path string) (string, error) {
+// StoredNumbers returns the file's track and disc number tags as text,
+// e.g. "3" or "3/12". Read parses those into numbers, so this is how
+// callers notice files not yet in the padded form PadNumber gives.
+func StoredNumbers(path string) (track, disc string, err error) {
 	c, err := codecFor(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return c.storedTrackNumber(path)
-}
-
-// CanonicalTrackNumber is the text Write would store for t's track number
-// in the file at path: "01" (FLAC, total kept in TRACKTOTAL) or "01/11" (MP3).
-func CanonicalTrackNumber(path string, t Track) (string, error) {
-	c, err := codecFor(path)
-	if err != nil {
-		return "", err
-	}
-	return c.canonicalTrackNumber(t), nil
+	return c.storedNumbers(path)
 }
 
 // rename is os.Rename; a variable seam kept for tests.

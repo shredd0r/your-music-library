@@ -9,25 +9,24 @@ import (
 	"reflect"
 	"testing"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/tags"
 	"your-music-library/internal/testutil"
 )
 
 func TestEditApply(t *testing.T) {
-	base := tags.Track{Title: "Old", Artists: []string{"A"}, TrackNumber: 1, TrackTotal: 9, Genre: "Pop"}
+	base := tags.Track{Title: "Old", Artists: []string{"A"}, TrackNumber: 1, Genre: "Pop"}
 	got, err := TagEdit{
-		config.FieldTitle:       " New ",
-		config.FieldArtists:     "A; B ;;C",
-		config.FieldTrackNumber: "3/12",
-		config.FieldDiscNumber:  "2",
-		config.FieldDate:        "1979-08-10",
-		config.FieldGenre:       "",
+		tags.FieldTitle:       " New ",
+		tags.FieldArtists:     "A; B ;;C",
+		tags.FieldTrackNumber: "03",
+		tags.FieldDiscNumber:  "2",
+		tags.FieldDate:        "1979-08-10",
+		tags.FieldGenre:       "",
 	}.Apply(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := tags.Track{Title: "New", Artists: []string{"A", "B", "C"}, TrackNumber: 3, TrackTotal: 12,
+	want := tags.Track{Title: "New", Artists: []string{"A", "B", "C"}, TrackNumber: 3,
 		DiscNumber: 2, Date: "1979-08-10"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
@@ -40,8 +39,8 @@ func TestEditApply(t *testing.T) {
 }
 
 // FieldValues is a test helper listing every editable field's value.
-func FieldValues(t tags.Track) map[config.Field]string {
-	m := map[config.Field]string{}
+func FieldValues(t tags.Track) map[tags.Field]string {
+	m := map[tags.Field]string{}
 	for _, f := range EditableFields {
 		m[f] = FieldValue(t, f)
 	}
@@ -50,13 +49,13 @@ func FieldValues(t tags.Track) map[config.Field]string {
 
 func TestEditRejectsBadValues(t *testing.T) {
 	for _, e := range []TagEdit{
-		{config.FieldDate: "10.08.1979"},
-		{config.FieldDate: "1979-8"},
-		{config.FieldTrackNumber: "three"},
-		{config.FieldTrackNumber: "0"},
-		{config.FieldTrackNumber: "13/12"},
-		{config.FieldDiscNumber: "1/x"},
-		{config.FieldPictureCover: "x"},
+		{tags.FieldDate: "10.08.1979"},
+		{tags.FieldDate: "1979-8"},
+		{tags.FieldTrackNumber: "three"},
+		{tags.FieldTrackNumber: "0"},
+		{tags.FieldTrackNumber: "3/12"},
+		{tags.FieldDiscNumber: "1/x"},
+		{tags.FieldPictureCover: "x"},
 	} {
 		if _, err := e.Apply(tags.Track{}); err == nil {
 			t.Errorf("%v accepted", e)
@@ -75,14 +74,14 @@ func TestPlanAndApplyEditKeepsOtherTags(t *testing.T) {
 	ctx := context.Background()
 	paths := []string{"A/X/01.flac", "A/X/02.mp3", "A/X/03.mp3"}
 
-	plan, err := l.PlanEdit(ctx, paths, TagEdit{config.FieldAlbum: "X", config.FieldDate: "1979"})
+	plan, err := l.PlanEdit(ctx, paths, TagEdit{tags.FieldAlbum: "X", tags.FieldDate: "1979"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Items) != 3 || plan.Unchanged != 0 {
 		t.Fatalf("plan = %+v", plan)
 	}
-	if c := plan.Items[1].Changes; len(c) != 2 || c[0].Field != config.FieldAlbum || c[0].Old != "x" {
+	if c := plan.Items[1].Changes; len(c) != 2 || c[0].Field != tags.FieldAlbum || c[0].Old != "x" {
 		t.Errorf("changes of 02 = %+v", c)
 	}
 	// planning wrote nothing
@@ -108,11 +107,11 @@ func TestPlanAndApplyEditKeepsOtherTags(t *testing.T) {
 		t.Errorf("edit lost the cover or IDs: %+v", got.IDs)
 	}
 
-	again, err := l.PlanEdit(ctx, paths, TagEdit{config.FieldAlbum: "X"})
+	again, err := l.PlanEdit(ctx, paths, TagEdit{tags.FieldAlbum: "X"})
 	if err != nil || len(again.Items) != 0 || again.Unchanged != 3 {
 		t.Errorf("second plan = %+v, %v", again, err)
 	}
-	if _, err := l.PlanEdit(ctx, paths, TagEdit{config.FieldDate: "soon"}); err == nil {
+	if _, err := l.PlanEdit(ctx, paths, TagEdit{tags.FieldDate: "soon"}); err == nil {
 		t.Error("bad date planned")
 	}
 }
@@ -139,5 +138,23 @@ func TestCoverEmbeddedThenFolder(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s: got %d bytes, want %d", rel, len(got), len(want))
 		}
+	}
+}
+
+func TestEditWritesTheFixedFormat(t *testing.T) {
+	l := newLib(t)
+	path := addFile(t, l, "a.flac", tags.Track{Title: "Song", Artist: "A"})
+	scan(t, l)
+	ctx := context.Background()
+	plan, err := l.PlanEdit(ctx, []string{"a.flac"}, TagEdit{tags.FieldArtist: "A feat. B", tags.FieldAlbum: "Don’t"})
+	if err != nil || len(plan.Items) != 1 {
+		t.Fatalf("plan = %+v, %v", plan, err)
+	}
+	if _, err := l.ApplyEdit(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := tags.Read(path)
+	if got.Title != "Song (feat. B)" || got.Artist != "A" || got.Album != "Don't" {
+		t.Errorf("got %+v", got)
 	}
 }

@@ -50,40 +50,40 @@ func TestConfigInitThenShow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"library_path:", "active_preset: full", "singles: as-album", "max_age_days: 180"} {
+	for _, want := range []string{"library_path:", "path_template:", "max_age_days: 180"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("config show missing %q:\n%s", want, out)
 		}
 	}
 }
 
-func TestPresetListMarksActive(t *testing.T) {
+func TestOldSettingsAreRemovedOnLoad(t *testing.T) {
 	dirs := testDirs(t)
 	os.MkdirAll(dirs.Config, 0o755)
-	os.WriteFile(dirs.ConfigFile(), []byte("active_preset: car\npresets:\n  car:\n    fields: [Title, Artist]\n    cover_max_px: 300\n"), 0o644)
+	os.WriteFile(dirs.ConfigFile(), []byte("# mine\nactive_preset: car\nsingles: grouped\npresets:\n  car:\n    fields: [Title]\nlibrary_path: /music\n"), 0o644)
 
-	out, err := run(t, dirs, "preset", "list")
+	out, err := run(t, dirs, "config", "show")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 { // header + car, full, mp3-player
-		t.Fatalf("expected 4 lines:\n%s", out)
+	if !strings.Contains(out, "note: removed active_preset, singles, presets") {
+		t.Errorf("no note:\n%s", out)
 	}
-	if !strings.HasPrefix(lines[1], "*") || !strings.Contains(lines[1], "car") || !strings.Contains(lines[1], "300px") {
-		t.Errorf("car should be first and active: %q", lines[1])
+	data, _ := os.ReadFile(dirs.ConfigFile())
+	if strings.Contains(string(data), "preset") || strings.Contains(string(data), "singles") || !strings.Contains(string(data), "# mine") {
+		t.Errorf("config file:\n%s", data)
 	}
-	if !strings.Contains(out, "mp3-player") || !strings.Contains(out, "600px") || !strings.Contains(out, "built-in") {
-		t.Errorf("built-ins missing:\n%s", out)
+	if _, err := run(t, dirs, "preset", "list"); err == nil {
+		t.Error("the preset command was removed")
 	}
 }
 
 func TestInvalidConfigIsReported(t *testing.T) {
 	dirs := testDirs(t)
 	os.MkdirAll(dirs.Config, 0o755)
-	os.WriteFile(dirs.ConfigFile(), []byte("singles: sometimes\n"), 0o644)
-	if _, err := run(t, dirs, "preset", "list"); err == nil || !strings.Contains(err.Error(), "singles") {
-		t.Errorf("expected singles validation error, got %v", err)
+	os.WriteFile(dirs.ConfigFile(), []byte("queue:\n  parallel: 0\n"), 0o644)
+	if _, err := run(t, dirs, "config", "show"); err == nil || !strings.Contains(err.Error(), "queue.parallel") {
+		t.Errorf("expected queue.parallel validation error, got %v", err)
 	}
 	// path works even with a broken config, so users can find the file
 	if _, err := run(t, dirs, "config", "path"); err != nil {

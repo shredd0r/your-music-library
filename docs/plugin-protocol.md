@@ -126,72 +126,9 @@ curl -X POST -H 'Content-Type: application/json' -d '{"query":"daft","kind":"alb
 curl -X POST -H 'Content-Type: application/json' -d '{"id":"track-42"}' -OJ http://127.0.0.1:8765/download
 ```
 
-## A minimal plugin in Python
+Adding plugin to ymlib:
 
-Standard library only. It offers the FLAC files in one folder; a real plugin would talk to its service here and keep its session in the handler's module state.
-
-```python
-import json, os, sys
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-
-FOLDER = sys.argv[2] if len(sys.argv) > 2 else "."
-
-def items():
-    for name in sorted(os.listdir(FOLDER)):
-        if name.endswith(".flac"):
-            stem = name[:-5]
-            yield {"id": stem, "kind": "track", "title": stem, "artist": "Unknown",
-                   "quality": {"format": "flac"}}
-
-class Plugin(BaseHTTPRequestHandler):
-    def answer(self, status, value):
-        body = json.dumps(value).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def error(self, status, code, message):
-        self.answer(status, {"error": {"code": code, "message": message}})
-
-    def do_GET(self):
-        if self.path == "/health":
-            return self.answer(200, {"name": "folder", "version": "0.1", "protocol": 1})
-        self.error(404, "permanent", "no such endpoint")
-
-    def do_POST(self):
-        req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        found = {it["id"]: it for it in items()}
-        if self.path == "/search":
-            q = req.get("query", "").lower()
-            hits = [it for it in found.values() if req.get("kind") == "track" and q in it["title"].lower()]
-            return self.answer(200, {"results": hits[: req.get("limit", 20)]})
-        if self.path in ("/resolve", "/download") and req.get("id") not in found:
-            return self.error(404, "not_found", "unknown id " + str(req.get("id")))
-        if self.path == "/resolve":
-            return self.answer(200, {"item": found[req["id"]], "tracks": []})
-        if self.path == "/download":
-            path = os.path.join(FOLDER, req["id"] + ".flac")
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/flac")
-            self.send_header("Content-Length", str(os.path.getsize(path)))
-            self.send_header("Content-Disposition", f'attachment; filename="{req["id"]}.flac"')
-            self.end_headers()
-            with open(path, "rb") as f:          # streamed in 1 MB pieces
-                while chunk := f.read(1 << 20):
-                    self.wfile.write(chunk)
-            return
-        self.error(404, "permanent", "no such endpoint")
-
-# ThreadingHTTPServer answers parallel downloads; port first, then the folder
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Plugin).serve_forever()
+```bash
+ymlib plugin add <provider-name> http://127.0.0.1:8765
+ymlib search <track-name>
 ```
-
-```sh
-python3 folder_plugin.py 8765 ~/Music/Rips &
-ymlib plugin add folder http://127.0.0.1:8765
-ymlib search folder-track-name
-```
-
-Any HTTP framework works the same way (aiohttp, FastAPI, Flask, Go's net/http, Node's http). The framework handles concurrency, so there's no request loop to write by hand.

@@ -9,7 +9,6 @@ import (
 	"os"
 	"testing"
 
-	"your-music-library/internal/config"
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/tags"
 	"your-music-library/internal/testutil"
@@ -77,15 +76,14 @@ func TestIdentifyAppliesConfidentMatch(t *testing.T) {
 	}
 
 	big := testutil.JPEG(t, 1000, 1000, color.RGBA{0, 0, 200, 255})
-	preset := config.Default().Presets["mp3-player"]
-	r, err := l.ApplyIdentify(ctx, plan, preset, fakeImages{data: big})
+	r, err := l.ApplyIdentify(ctx, plan, fakeImages{data: big})
 	if err != nil || r.Changed != 2 || len(r.Failed) != 0 {
 		t.Fatalf("apply = %+v %v", r, err)
 	}
 
 	got, _ := tags.Read(l.abs("inbox/2.mp3"))
 	if got.Title != "Speed Demon" || got.Album != "Bad" || got.AlbumArtist != "Michael Jackson" ||
-		got.TrackNumber != 3 || got.TrackTotal != 3 || got.DiscNumber != 1 || got.DiscTotal != 1 ||
+		got.TrackNumber != 3 || got.TrackTotal != 0 || got.DiscNumber != 1 || got.DiscTotal != 0 ||
 		got.Date != "1987-08-31" || got.Genre != "Pop" || got.ReleaseType != "album" {
 		t.Errorf("tags = %+v", got)
 	}
@@ -93,8 +91,8 @@ func TestIdentifyAppliesConfidentMatch(t *testing.T) {
 		t.Errorf("IDs = %+v (source IDs must survive)", got.IDs)
 	}
 	cfg, _, _ := image.DecodeConfig(bytes.NewReader(got.Cover.Data))
-	if cfg.Width != 600 {
-		t.Errorf("embedded cover %dpx, want 600 (mp3-player)", cfg.Width)
+	if cfg.Width != tags.CoverMaxPx {
+		t.Errorf("embedded cover %dpx, want %d", cfg.Width, tags.CoverMaxPx)
 	}
 	if saved, _ := os.ReadFile(l.abs("inbox/cover.jpg")); !bytes.Equal(saved, big) {
 		t.Error("cover.jpg should be the full-size download")
@@ -122,7 +120,7 @@ func TestIdentifyCoverFailureStillTags(t *testing.T) {
 	ctx := context.Background()
 	id := &metadata.Identifier{Providers: []metadata.Provider{&fakeProvider{releases: map[string]metadata.Release{"mb-bad": badRelease()}}}, MinScore: 0.85}
 	plan, _ := l.PlanIdentify(ctx, id, IdentifyOptions{})
-	r, err := l.ApplyIdentify(ctx, plan, config.Default().Presets["full"], fakeImages{fails: true})
+	r, err := l.ApplyIdentify(ctx, plan, fakeImages{fails: true})
 	if err != nil || r.Changed != 1 || len(r.Warnings) != 1 {
 		t.Errorf("report = %+v %v", r, err)
 	}
@@ -140,12 +138,12 @@ func TestIdentifyLowConfidenceGoesToReview(t *testing.T) {
 	if err != nil || len(plan.Reviews) != 1 || len(plan.Matches) != 0 {
 		t.Fatalf("plan = %+v %v", plan, err)
 	}
-	if _, err := l.ApplyIdentify(ctx, plan, config.Default().Presets["full"], nil); err != nil {
+	if _, err := l.ApplyIdentify(ctx, plan, nil); err != nil {
 		t.Fatal(err)
 	}
 	// identifying again replaces the open review instead of duplicating it
 	plan, _ = l.PlanIdentify(ctx, id, IdentifyOptions{})
-	l.ApplyIdentify(ctx, plan, config.Default().Presets["full"], nil)
+	l.ApplyIdentify(ctx, plan, nil)
 	reviews, err := l.Reviews(ctx)
 	if err != nil || len(reviews) != 1 {
 		t.Fatalf("reviews = %+v %v", reviews, err)
@@ -165,7 +163,7 @@ func TestIdentifyLowConfidenceGoesToReview(t *testing.T) {
 	if _, err := l.PlanResolve(ctx, rv.ID, 2, nil); err == nil {
 		t.Error("candidate out of range accepted")
 	}
-	if _, err := l.ApplyResolve(ctx, rv.ID, am, config.Default().Presets["full"], nil); err != nil {
+	if _, err := l.ApplyResolve(ctx, rv.ID, am, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := tags.Read(l.abs("x/1.flac")); got.Album != "Bad" || got.IDs.MBReleaseID != "mb-bad" {
@@ -193,14 +191,13 @@ func TestIdentifyPrefixesAndUntitled(t *testing.T) {
 	}
 }
 
-func TestApplyReleaseKeepsGroupedSingle(t *testing.T) {
-	cur := tags.Track{Title: "usseewa", Album: "Ado Singles", AlbumArtist: "Ado", TrackNumber: 2, TrackTotal: 5,
-		OriginalAlbum: "Usseewa", OriginalTrack: 1}
-	rel := metadata.Release{Provider: "discogs", ID: "77", Title: "うっせぇわ", Artist: "Ado", ReleaseType: "single",
+func TestApplyReleaseWritesNoTotals(t *testing.T) {
+	cur := tags.Track{Title: "usseewa", TrackTotal: 5, DiscTotal: 2}
+	rel := metadata.Release{Provider: "discogs", ID: "77", Title: "Usseewa", Artist: "Ado", ReleaseType: "single",
 		Tracks: []metadata.Track{{Disc: 1, Number: 1, Title: "Usseewa", Artist: "Ado"}}}
 	got := ApplyRelease(cur, rel, 0)
-	if got.Album != "Ado Singles" || got.TrackNumber != 2 || got.TrackTotal != 5 || got.OriginalAlbum != "うっせぇわ" ||
-		got.OriginalTrack != 1 || got.Title != "Usseewa" || got.IDs.DiscogsReleaseID != "77" {
+	if got.Album != "Usseewa" || got.TrackNumber != 1 || got.DiscNumber != 1 || got.TrackTotal != 0 || got.DiscTotal != 0 ||
+		got.Title != "Usseewa" || got.IDs.DiscogsReleaseID != "77" {
 		t.Errorf("got %+v", got)
 	}
 }
@@ -211,10 +208,9 @@ func TestReviewsFollowIdentifyAndOrganize(t *testing.T) {
 	addFile(t, l, "y/1.flac", tags.Track{Title: "Bad", Artist: "Michael Jackson", Album: "Bad (Tokyo)", TrackNumber: 1})
 	scan(t, l)
 	ctx := context.Background()
-	full := config.Default().Presets["full"]
 	weak := &metadata.Identifier{Providers: []metadata.Provider{&fakeProvider{releases: map[string]metadata.Release{"mb-bad": badRelease()}}}, MinScore: 0.99}
 	plan, _ := l.PlanIdentify(ctx, weak, IdentifyOptions{})
-	l.ApplyIdentify(ctx, plan, full, nil)
+	l.ApplyIdentify(ctx, plan, nil)
 	if rs, _ := l.Reviews(ctx); len(rs) != 2 {
 		t.Fatalf("reviews = %d", len(rs))
 	}
@@ -240,7 +236,7 @@ func TestReviewsFollowIdentifyAndOrganize(t *testing.T) {
 	if len(plan.Matches) != 1 {
 		t.Fatalf("plan = %+v", plan)
 	}
-	l.ApplyIdentify(ctx, plan, full, nil)
+	l.ApplyIdentify(ctx, plan, nil)
 	if left, _ := l.Reviews(ctx); len(left) != 1 || left[0].ID == rs[0].ID {
 		t.Errorf("review of identified files still open: %+v", left)
 	}

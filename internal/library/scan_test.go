@@ -38,7 +38,7 @@ func TestScanIndexesAndTracksChanges(t *testing.T) {
 
 	es := entries(t, l)
 	e := es["x/a.flac"]
-	if e.Title != "A" || !reflect.DeepEqual(e.Artists, []string{"Art", "Feat"}) || e.DiscTotal != 2 {
+	if e.Title != "A" || !reflect.DeepEqual(e.Artists, []string{"Art", "Feat"}) || e.DiscNumber != 1 {
 		t.Errorf("entry = %+v", e)
 	}
 
