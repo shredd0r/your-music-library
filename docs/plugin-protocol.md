@@ -7,13 +7,9 @@ ymlib doesn't ship plugins for any service. Plugin authors are responsible for u
 ## Running and registering
 
 1. Start your plugin server (a terminal, your IDE, launchd/systemd, Docker: your choice). Listen on `127.0.0.1` unless you really want it reachable from other machines. There is no authentication, so anyone who can reach the port can use the plugin.
-2. Register it once:
-   ```sh
-   ymlib plugin add myplugin http://127.0.0.1:8765
-   ymlib plugin list        # name, URL, enabled, online/offline
-   ```
+2. Register it once: in ymlib's **Settings** screen press `a` and enter a name and the URL (`http://127.0.0.1:8765`). Settings lists every plugin with its URL, whether it is enabled, and whether it is online.
    The name you choose (`myplugin`) appears in every reference (`myplugin:<id>`) and in queued jobs. It may not contain `:`, `/` or spaces.
-3. `ymlib plugin disable|enable|remove myplugin` manage the registration, which is stored in `config.yaml` under `plugins.registered`.
+3. In Settings, `enter` enables or disables the selected plugin and `x` removes it. Registrations are stored in `config.yaml` under `plugins.registered`.
 
 A plugin keeps whatever state it needs (logins, sessions, caches, open connections) in its own memory, for as long as it runs.
 
@@ -23,7 +19,7 @@ All requests and answers are JSON (`Content-Type: application/json`), except the
 
 ### `GET /health`
 
-Who the plugin is. ymlib calls it when you register the plugin, for `ymlib plugin list`, once per download run, and every 15 seconds while the TUI is open (2-second timeout).
+Who the plugin is. ymlib calls it when you register the plugin, when ymlib starts, once per download run, and every 15 seconds while ymlib is open (2-second timeout).
 
 ```json
 {"name": "myplugin", "version": "1.2.0", "protocol": 1}
@@ -115,7 +111,7 @@ Any other code, a missing error body, or a broken answer counts as `temporary`.
 If the server doesn't answer (not started, crashed, wrong port):
 
 - **Search** skips it and warns that it is offline.
-- **Queued downloads wait** without using up their attempts. Each queue run (`ymlib queue run`, a new download, or the TUI noticing the plugin is back) tries them again. After `plugins.offline_wait_minutes` (default 60) they fail with "offline"; `ymlib queue retry` brings them back.
+- **Queued downloads wait** without using up their attempts. Each queue run (a new download, `s` on the Queue screen, or ymlib noticing the plugin is back) tries them again. After `plugins.offline_wait_minutes` (default 60) they fail with "offline"; retrying them on the Queue screen (`r`/`R`) brings them back.
 - A **disabled** plugin is treated the same way: its downloads wait until you enable it.
 
 ## Try it with curl
@@ -126,9 +122,4 @@ curl -X POST -H 'Content-Type: application/json' -d '{"query":"daft","kind":"alb
 curl -X POST -H 'Content-Type: application/json' -d '{"id":"track-42"}' -OJ http://127.0.0.1:8765/download
 ```
 
-Adding plugin to ymlib:
-
-```bash
-ymlib plugin add <provider-name> http://127.0.0.1:8765
-ymlib search <track-name>
-```
+Then add the plugin in ymlib's Settings (`a`) and search for a track on the Search screen.

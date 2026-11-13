@@ -81,6 +81,25 @@ func CollectAudio(dir string) ([]string, error) {
 	return files, err
 }
 
+// PlanImport plans importing the audio files in dir, a folder outside the
+// library (opts.Base is set to dir). Files inside the library are tidied
+// with identify and Tidy library instead.
+func (l *Library) PlanImport(ctx context.Context, dir string, id *metadata.Identifier, opts IngestOptions) (IngestPlan, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return IngestPlan{}, err
+	}
+	if rel, err := filepath.Rel(l.root, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return IngestPlan{}, fmt.Errorf("%s is inside the library; identify and tidy it there instead", dir)
+	}
+	files, err := CollectAudio(dir)
+	if err != nil {
+		return IngestPlan{}, err
+	}
+	opts.Base = dir
+	return l.PlanIngest(ctx, files, id, opts)
+}
+
 // PlanIngest reads the files, skips duplicates, identifies albums (when id
 // is not nil) and computes target paths. It changes nothing.
 func (l *Library) PlanIngest(ctx context.Context, files []string, id *metadata.Identifier, opts IngestOptions) (IngestPlan, error) {

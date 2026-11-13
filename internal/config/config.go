@@ -191,8 +191,8 @@ func dropKeys(m *yaml.Node, keys []string) {
 // removedKeys were settings of earlier versions; they get a hint instead
 // of the plain "unknown field" error.
 var removedKeys = map[string]string{
-	"sources_dir": "sources_dir was removed: plugins are now servers you run; register them with `ymlib plugin add <name> <url>`",
-	"sources":     "the sources section was removed: plugins are now servers you run; register them with `ymlib plugin add <name> <url>`",
+	"sources_dir": "sources_dir was removed: plugins are now servers you run; add them in Settings (a)",
+	"sources":     "the sources section was removed: plugins are now servers you run; add them in Settings (a)",
 }
 
 // Parse merges YAML data over Default and validates the result.

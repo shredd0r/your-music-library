@@ -1,156 +1,93 @@
 # ymlib: your music library
 
-A command-line and terminal tool for keeping a local music collection clean: it indexes your files, looks up correct metadata on **Discogs** and **MusicBrainz**, writes tags in the format you choose, downloads covers, and sorts files into a consistent `Artist/Album/01 - Title.flac` layout.
+A terminal app for keeping a local music collection clean: it indexes your files, looks up correct metadata on **Discogs** and **MusicBrainz**, writes tags in one consistent format, downloads covers, sorts files into an `Artist/Album/01 - Title.flac` layout, and downloads music through plugin servers you run.
 
-> **Status: `0.1.0-dev`, Stage 1 complete.** Tagging, organizing, metadata lookup, importing, downloading through plugin servers you run, and the terminal UI work. Playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
+> **Status: `0.1.0-dev`.** Tagging, tidying, metadata lookup, importing, downloading and the terminal UI work. Batch downloads, playlists and device sync are planned. See [MILESTONES.md](MILESTONES.md).
 
-## What it does today
+ymlib is a terminal UI only: run `ymlib` (no arguments) in a terminal.
 
-| Feature | Command |
-|---|---|
-| Terminal UI: search and download, queue, library browser with covers and tag editing, review, settings | `ymlib` |
-| Index your music folder (reads tags only, changes nothing) | `ymlib scan` |
-| Identify albums on Discogs/MusicBrainz and write tags and covers | `ymlib identify` |
-| Choose a release by hand when a match isn't certain | `ymlib review` |
-| Bring existing files to the fixed tag format (see [Tags](#tags)) | `ymlib retag` |
-| Rename and move files according to a path template | `ymlib organize` |
-| Import a folder (rips, purchases) into the library | `ymlib import` |
-| Register download plugins (HTTP servers you run) | `ymlib plugin` |
-| Search and download through those plugins | `ymlib search`, `ymlib download`, `ymlib queue` |
+**Nothing changes without asking.** Everything that modifies files shows a preview first and acts only when you confirm. Files are never overwritten. Tags ymlib doesn't manage (ReplayGain, lyrics, comments) are kept.
 
-**Nothing changes without asking.** Every command that modifies files shows a preview first and acts only with `--apply`. Files are never overwritten. Unknown tags (ReplayGain, comments, other pictures) are kept.
-
-Supported formats: **FLAC** and **MP3** (ID3v2.4). Other audio files (M4A, OGG, OPUS, …) are listed by `scan` as unsupported and left alone.
+Supported formats: **FLAC** and **MP3** (ID3v2.4). Other audio files (M4A, OGG, OPUS, …) are left alone.
 
 ## Requirements
 
-- macOS or Linux
+- macOS or Linux, and a terminal
 - Go 1.26+ to build
 - Optional: a [Discogs personal access token](https://www.discogs.com/settings/developers), used as the primary metadata source. Without one, MusicBrainz is used on its own.
 
-## Build
+## Build and start
 
 ```sh
 make build          # → bin/ymlib
-./bin/ymlib --help
+./bin/ymlib
 ```
 
-## Quick start
+On first start ymlib writes `~/.config/ymlib/config.yaml` with the defaults and creates the library folder `~/Music/ymlib`. To use another folder, set `library_path` in that file and start again.
+
+**Discogs token (optional).** ymlib reads it from the OS keychain, or from `YMLIB_DISCOGS_TOKEN`, which wins. It never stores it itself; add it once with your OS tools:
 
 ```sh
-# 1. Create the config and point it at your music
-ymlib config init                     # writes ~/.config/ymlib/config.yaml
-$EDITOR ~/.config/ymlib/config.yaml   # set library_path
-
-# 2. (Optional) store your Discogs token in the OS keychain
-ymlib auth discogs
-
-# 3. Index the library
-ymlib scan
-
-# 4. Look up metadata: preview, then apply
-ymlib identify
-ymlib identify --apply
-
-# 5. Pick releases for albums that weren't matched confidently
-ymlib review
-ymlib review apply 1 2 --apply        # review #1, candidate 2
-
-# 6. Rename files from their new tags
-ymlib organize
-ymlib organize --apply
+# macOS
+security add-generic-password -s ymlib -a discogs-token -w <token>
+# Linux (Secret Service)
+secret-tool store --label="ymlib Discogs token" service ymlib username discogs-token
 ```
 
-## Terminal UI
+Settings shows whether a token was found.
 
-Run `ymlib` with no arguments, or `ymlib tui`:
+## Screens
 
 | Screen | What you do there |
 |---|---|
 | **1 Search** | `/` to type a query, `ctrl+t` to switch between tracks and albums, `enter` to search. Results show ✓ in library, ≈ other edition, ↓ queued, plus details and the cover. `enter` or `d` downloads. Offline plugins are skipped with a warning. |
 | **2 Queue** | Jobs and the download log. `s` start/resume, `x` stop, `r`/`R` retry one/all failed, `c`/`C` clear finished (and failed). Jobs marked `…` wait for an offline or disabled plugin. |
-| **3 Library** | Albums (`/` filters by artist, album or track title), tracks, tags and cover. `e` edits the album's or the track's tags: preview first, `y` to write. `s` rescans. |
+| **3 Library** | Albums (`/` filters by artist, album or track title), tracks, tags and cover. See [Library actions](#library-actions). |
 | **4 Review** | Albums without a confident match: your files next to each candidate release (`←→`), with cover and tracklist. `enter` previews, `y` writes, `s` skips. |
-| **5 Settings** | Configuration (with the path of `config.yaml`) and plugins (online/offline). `enter` enables or disables a plugin, saved to `config.yaml` with your comments kept. `r` checks the plugins again. |
+| **5 Settings** | Configuration (with the path of `config.yaml`), the Discogs token status, and plugins (online/offline). `enter` enables or disables a plugin, `a` adds one (name and URL), `x` removes one; changes are saved to `config.yaml` with your comments kept. `r` checks the plugins again. |
 
-`tab` or `1`–`5` switch screens, `q` quits, `esc` leaves a text box. Quitting stops downloads; they resume next time. Plugins are checked every 15 seconds; when one comes back online, downloads waiting for it start.
+`tab` or `1`–`5` switch screens, `q` quits, `esc` leaves a text box or cancels a preview. Quitting stops downloads; they resume next time. Plugins are checked every 15 seconds; when one comes back online, downloads waiting for it start.
 
 Covers are real images in **Kitty** and **Ghostty**. Other terminals (iTerm2, Apple Terminal, inside tmux) get colored half-blocks. Set `YMLIB_IMAGES=kitty` or `YMLIB_IMAGES=halfblock` to choose.
 
-## Commands
+### Library actions
 
-### `scan`
-Walks `library_path`, reads tags and updates the index (SQLite). Files whose size and modification time haven't changed aren't read again. Hidden files and macOS `._*` files are skipped. `organize`, `retag` and `identify` scan automatically first.
+Each action shows a preview; `enter` (or `y`) applies it, `esc` cancels, `↑↓` scrolls.
 
-### `identify [folder...] [--force] [--apply]`
-Groups files by album and looks each album up. It tries Discogs first, then MusicBrainz if Discogs fails, finds nothing, or finds nothing confident.
+| Key | Action |
+|---|---|
+| `s` / `S` | Rescan the library folder / rebuild the index by rereading every file. The index follows the files: new and changed files are read, missing ones dropped. Hidden files and macOS `._*` files are skipped. |
+| `e` | Edit the album's or the track's tags (preview first). Text is saved in the [fixed format](#tags). |
+| `i` / `I` | Identify the selected album / every album without a release ID. See [Identify](#identify). |
+| `t` | **Tidy library**: bring every file to the [fixed tag format](#tags), then move files to their `path_template` location. One preview lists the tag changes and then the file moves, computed from the new tags. Before an embedded cover is shrunk, the full-size image is saved as `cover.jpg`. If a playlist in `<library>/Playlists/` lists a file that moves, the preview warns: *playlists could be broken*. |
+| `a` | **Import** a folder from outside the library (CD rips, purchases): tracks already in the library are skipped, albums are identified, and files are tagged and filed by `path_template`. `enter` copies; `m` imports and deletes the originals. |
 
-- **Whole-record matching:** every tag of a file comes from a single release, never a mix of sources.
+### Identify
+
+Files are grouped by album and each album is looked up: Discogs first, then MusicBrainz if Discogs fails, finds nothing, or finds nothing confident.
+
+- **Whole-record matching:** every tag of a file comes from a single release, never a mix of sources. The one exception: when the chosen release has no genre or no front cover, the next provider may fill them in, but only from a release that also scores at least `min_score` against your files.
 - Matching ignores case, accents, typographic quotes, guest credits ("(feat. X)") and edition suffixes like "(Remastered 2009)". Compilations are scored down so a single isn't mistaken for track 7 of a "Hits of 1987" album.
-- Matches scoring at least `metadata.min_score` (default 0.85) are applied. Weaker ones go to `ymlib review`.
+- Matches scoring at least `metadata.min_score` (default 0.85) are applied. Weaker ones go to the Review screen.
 - Dates are written as `yyyy-mm-dd` using the original release date. When a source only knows the year, the app looks further (the edition's date on MusicBrainz, the main edition on Discogs). A day is never invented.
-- When the chosen release has no genre or no front cover, the next provider may fill them in, but only from a release that also scores at least `min_score` against your files. Otherwise the field stays empty.
-- The front cover is downloaded once per album. The full-size image is saved as `cover.jpg` in the album folder; the embedded copy is at most 600 px. Back covers aren't used.
-- Files that already carry a release ID are skipped; `--force` looks them up again.
-- Optional folders limit the run: `ymlib identify "Michael Jackson/Bad"`.
+- The front cover is downloaded once per album, saved full size as `cover.jpg`, and embedded at most 600 px. Back covers aren't used.
+- Files that already carry a release ID are skipped.
 
-### `review`
-```sh
-ymlib review                           # open items with numbered candidates and links
-ymlib review apply <id> <n> [--apply]  # tag the files with candidate n
-ymlib review skip <id>                 # dismiss without changes
-```
-Review items keep track of files moved by `organize`, and close automatically when a later `identify` tags those files.
+### Downloads
 
-### `retag [--apply]`
-Brings every file to the fixed [tag format](#tags): removes track/disc totals and embedded back covers, pads numbers (`1`, `3/12` → `01`, `03`), converts typographic quotes and dashes to ASCII, moves guests from Artist into the title, restores singles that an older version grouped into `<Artist> Singles`, and shrinks embedded covers. Before a cover is shrunk, the full-size image is saved as `cover.jpg` in the album folder. Tags ymlib doesn't manage (ReplayGain, lyrics, comments) are kept. Run `organize` afterwards, since titles and numbers may change file names.
+Downloads come from **plugins**: HTTP servers you run yourself, in any language. ymlib doesn't include any download source; it only keeps each plugin's address (add it in Settings) and talks to it (`GET /health`, `POST /search`, `POST /resolve`, `POST /download`, which streams the file). The protocol, with a minimal Python plugin, is in [docs/plugin-protocol.md](docs/plugin-protocol.md). Plugin authors are responsible for using services in line with their terms.
 
-### `organize [--apply]`
-Moves files to the paths given by `path_template`. `cover.jpg` and other folder images move with their album, empty folders are removed, and letter-case-only renames work on macOS. Path conflicts are reported and skipped, never overwritten.
-
-### `import <folder> [--apply] [--move] [--force] [--no-lookup]`
-Brings audio files from outside the library in (CD rips, Bandcamp downloads, …).
-- Tracks already in the library are skipped (`--force` imports them anyway).
-- Albums are identified like `identify`, and files are tagged in the fixed format and copied to their `path_template` location.
-- `--move` deletes the originals after a successful import. `--no-lookup` keeps the files' own tags.
-
-### Downloads: `plugin`, `search`, `download`, `queue`
-```sh
-ymlib plugin add <name> <url>          # register a plugin server you run
-ymlib plugin list                      # registered plugins, online/offline
-ymlib plugin enable|disable|remove <name>
-ymlib search rock with you             # tracks; ✓ = in library, ≈ = other edition in library
-ymlib search --album off the wall
-ymlib search --plugin NAME <query>     # only this plugin (also when disabled)
-ymlib download myplugin:t1             # <plugin>:<id> from the search results
-ymlib download --album myplugin:a1
-ymlib queue                            # jobs and results
-ymlib queue run                        # resume after Ctrl-C or a crash
-ymlib queue retry [job-id]             # failed jobs again
-ymlib queue clear [--failed]
-```
 How a download proceeds:
 1. Albums are split into tracks, and tracks already in the library are skipped.
 2. Each track is downloaded into a hidden staging folder inside the library.
 3. The file is checked: it must decode (with ffmpeg, if installed), and its length must match what the source announced.
 4. Temporary failures are retried up to 3 times (after 30 s, 2 min, 8 min). When the plugin says the item is not found or permanently unavailable, the job fails right away.
-5. If the plugin is offline or disabled, the job waits without using up attempts. The next `ymlib queue run` (or the TUI, when the plugin is back) tries again; after `plugins.offline_wait_minutes` it fails, and `ymlib queue retry` brings it back.
+5. If the plugin is offline or disabled, the job waits without using up attempts, and starts when the plugin is back. After `plugins.offline_wait_minutes` it fails; retry it on the Queue screen.
 6. When all tracks of an album are in, the album is identified once, tagged in the fixed format and filed by `path_template`. Nothing half-finished ever appears in the library.
-
-**Source plugins.** ymlib doesn't include any download source. A plugin is an **HTTP server you run yourself**, in any language; ymlib only keeps its address and talks to it (`GET /health`, `POST /search`, `POST /resolve`, `POST /download`, which streams the file). Register one with `ymlib plugin add <name> http://127.0.0.1:<port>`. If a plugin is offline, searches skip it and its queued downloads wait (up to `plugins.offline_wait_minutes`) instead of failing. The protocol, with a minimal Python plugin, is in [docs/plugin-protocol.md](docs/plugin-protocol.md). Plugin authors are responsible for using services in line with their terms.
-
-### `config`, `auth`
-```sh
-ymlib config path        # where config, database and cache live
-ymlib config show        # effective configuration
-ymlib config init [--force]
-ymlib auth discogs       # store the Discogs token (--remove to delete)
-ymlib auth status
-```
 
 ## Configuration
 
-`~/.config/ymlib/config.yaml`. Only the keys you set override the defaults. Unknown keys are reported as errors, so typos don't go unnoticed.
+`~/.config/ymlib/config.yaml`, written with the defaults on first start. Only the keys you set override the defaults. Unknown keys are reported as errors, so typos don't go unnoticed. Changes take effect at the next start.
 
 ```yaml
 library_path: ~/Music/ymlib
@@ -165,7 +102,7 @@ queue:
   parallel: 2                      # simultaneous downloads
 plugins:
   offline_wait_minutes: 60         # downloads of an offline or disabled plugin wait this long, then fail
-  registered:                      # managed by `ymlib plugin add|remove|enable|disable`
+  registered:                      # managed in Settings
     myplugin: {url: "http://127.0.0.1:8765", enabled: true}
 ```
 
@@ -212,7 +149,7 @@ Names are made safe for FAT32/exFAT (SD cards, players): characters like `/ \ : 
 | Discogs token | OS keychain (`YMLIB_DISCOGS_TOKEN` overrides it) |
 | Download staging | `<library>/.ymlib-incoming/` (hidden; files that failed to import stay here) |
 
-The database is only an index; your files' tags are the source of truth. Deleting `library.db` loses only cached lookups, open review items and the download queue: run `ymlib scan` to rebuild the index.
+The database is only an index; your files' tags are the source of truth. Deleting `library.db` loses only cached lookups, open review items and the download queue; the index is rebuilt from your files on the next start.
 
 ## Development
 
@@ -222,6 +159,8 @@ make lint     # golangci-lint (installed into bin/ by `make install-lint`)
 make check    # lint + test
 make fmt
 ```
+
+`ymlib` needs a terminal, so automated tests drive the UI through `App.Update` (`internal/tui/tui_test.go`) instead of a real terminal.
 
 Tests never touch the network, your home directory or your keychain. Provider responses are recorded fixtures in `internal/metadata/testdata`. Download tests use a fake plugin server running inside the test process (`internal/source/sourcetest`).
 

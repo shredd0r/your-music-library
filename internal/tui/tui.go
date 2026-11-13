@@ -1,5 +1,6 @@
-// Package tui is the terminal UI, built with Bubble Tea. Its screens call
-// the same internal packages as the CLI; no library logic lives here.
+// Package tui is the terminal UI, built with Bubble Tea: ymlib's only
+// interface. Its screens call the internal packages; no library logic
+// lives here.
 //
 // Screens: Search & Download, Queue, Library, Review, Settings. Long work
 // (searches, lookups, tag writes, downloads) runs in commands, and the
@@ -22,6 +23,7 @@ import (
 	"your-music-library/internal/library"
 	"your-music-library/internal/metadata"
 	"your-music-library/internal/queue"
+	"your-music-library/internal/secrets"
 	"your-music-library/internal/source"
 	"your-music-library/internal/termimg"
 )
@@ -35,7 +37,10 @@ type Deps struct {
 	Images     library.ImageSource  // nil: no remote covers
 	Config     config.Config
 	ConfigPath string
-	Covers     termimg.Protocol // how covers are drawn
+	// DiscogsToken says where the Discogs token was found (shown in
+	// Settings; the UI never reads or writes the keychain itself).
+	DiscogsToken secrets.Source
+	Covers       termimg.Protocol // how covers are drawn
 	// Warnings are shown in the status line at start.
 	Warnings []string
 	// Verify overrides download verification (tests); nil = download.Verify.

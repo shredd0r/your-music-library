@@ -1,6 +1,7 @@
-// Package secrets stores API credentials in the OS keychain (macOS
+// Package secrets reads API credentials from the OS keychain (macOS
 // Keychain, Secret Service on Linux), with environment variables taking
-// precedence so scripts and CI need no keychain.
+// precedence. ymlib never writes the keychain; the user adds tokens with
+// the OS tools (see the README).
 package secrets
 
 import (
@@ -44,23 +45,6 @@ func Get(s Secret) (string, Source, error) {
 		return "", SourceNone, err
 	}
 	return v, SourceKeychain, nil
-}
-
-// Set stores the secret in the keychain.
-func Set(s Secret, value string) error {
-	if value == "" {
-		return errors.New("empty value")
-	}
-	return keyring.Set(service, s.Key, value)
-}
-
-// Delete removes the secret from the keychain; missing is not an error.
-func Delete(s Secret) error {
-	err := keyring.Delete(service, s.Key)
-	if errors.Is(err, keyring.ErrNotFound) {
-		return nil
-	}
-	return err
 }
 
 // UseMockKeychain replaces the OS keychain with an in-memory one (tests).

@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"your-music-library/internal/library"
+	"your-music-library/internal/platform"
 	"your-music-library/internal/tags"
 )
 
@@ -71,7 +72,8 @@ func groupAlbums(es []library.Entry) []album {
 	return out
 }
 
-// libScreen browses albums and tracks, shows tags and covers and edits tags.
+// libScreen browses albums and tracks, shows tags and covers, edits tags
+// and runs library-wide tasks (rebuild, tidy, identify, import).
 type libScreen struct {
 	s         *shared
 	albums    []album
@@ -82,8 +84,12 @@ type libScreen struct {
 	filter    textinput.Model
 	filtering bool
 	form      *editForm
+	task      *libTask         // a previewed library task
+	planning  bool             // a task is being planned
+	importDir *textinput.Model // asks for the folder to import
 	loading   bool
 	err       error
+	height    int // last view height, for scrolling task previews
 }
 
 func newLibrary(s *shared) *libScreen {
@@ -92,30 +98,41 @@ func newLibrary(s *shared) *libScreen {
 
 func (m *libScreen) name() string { return "Library" }
 
-func (m *libScreen) init() tea.Cmd { return m.load(true) }
+func (m *libScreen) init() tea.Cmd { return m.load(true, false) }
 
-func (m *libScreen) capturing() bool { return m.filtering || m.form != nil }
+func (m *libScreen) capturing() bool {
+	return m.filtering || m.form != nil || m.task != nil || m.importDir != nil
+}
 
 func (m *libScreen) help() string {
 	switch {
 	case m.form != nil:
 		return m.form.help()
+	case m.task != nil:
+		return m.task.help()
+	case m.importDir != nil:
+		return "type a folder outside the library · enter preview · esc cancel"
 	case m.filtering:
 		return "type to filter · enter done · esc clear"
 	case m.onTracks:
-		return "↑↓ track · ←/esc albums · e edit track · s rescan"
+		return "↑↓ track · ←/esc albums · e edit track · i identify album · s rescan"
 	}
-	return "↑↓ album · →/enter tracks · e edit album · / filter · s rescan"
+	return "↑↓ album · → tracks · e edit · i/I identify album/all · t tidy · a import · / filter · s/S rescan/rebuild"
 }
 
-// load reads the index, scanning the library folder first if scan is set.
-func (m *libScreen) load(scan bool) tea.Cmd {
+// load reads the index, scanning the library folder first if scan is set
+// (rereading every file if rebuild is set too).
+func (m *libScreen) load(scan, rebuild bool) tea.Cmd {
 	m.loading = true
 	s := m.s
 	return func() tea.Msg {
 		var rep *library.ScanReport
 		if scan {
-			r, err := s.d.Lib.Scan(s.ctx)
+			scan := s.d.Lib.Scan
+			if rebuild {
+				scan = s.d.Lib.Rebuild
+			}
+			r, err := scan(s.ctx)
 			if err != nil {
 				return libraryMsg{err: err}
 			}
@@ -127,6 +144,36 @@ func (m *libScreen) load(scan bool) tea.Cmd {
 }
 
 func (m *libScreen) update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case taskPlanMsg:
+		m.planning = false
+		if msg.err != nil {
+			return errStatus(msg.err)
+		}
+		m.task = msg.task
+		return status("preview ready; nothing changes until you confirm")
+	case taskDoneMsg:
+		if m.task == nil {
+			return nil
+		}
+		cmd := m.task.update(msg, m.height)
+		m.task = nil
+		return cmd
+	}
+	if m.task != nil {
+		if k, ok := msg.(tea.KeyPressMsg); ok {
+			cmd := m.task.update(k, max(1, m.height-3))
+			if m.task.done {
+				m.task = nil
+			}
+			return cmd
+		}
+	}
+	if m.importDir != nil {
+		if k, ok := msg.(tea.KeyPressMsg); ok {
+			return m.importKey(k)
+		}
+	}
 	if m.form != nil {
 		switch msg.(type) {
 		case tea.KeyPressMsg, editPlanMsg, editDoneMsg:
@@ -142,7 +189,7 @@ func (m *libScreen) update(msg tea.Msg) tea.Cmd {
 		return m.loaded(msg)
 	case refreshMsg:
 		if msg.library {
-			return m.load(false)
+			return m.load(false, false)
 		}
 	case tea.KeyPressMsg:
 		if m.filtering {
@@ -240,11 +287,56 @@ func (m *libScreen) key(key string) tea.Cmd {
 		m.filtering = true
 		return m.filter.Focus()
 	case "s":
-		return tea.Batch(status("scanning…"), m.load(true))
+		return tea.Batch(status("scanning…"), m.load(true, false))
+	case "S":
+		return tea.Batch(status("rebuilding the index: rereading every file…"), m.load(true, true))
 	case "e":
 		return m.startEdit()
+	case "t":
+		return m.plan("planning Tidy library…", planTidy(m.s))
+	case "i":
+		if a != nil {
+			return m.plan("looking up "+a.artist+" — "+a.title+"…", planIdentify(m.s, []string{a.dir + "/"}, a.artist+" — "+a.title))
+		}
+	case "I":
+		return m.plan("looking up every album without a release ID…", planIdentify(m.s, nil, "library"))
+	case "a":
+		in := newInput("Import folder: ")
+		m.importDir = &in
+		return m.importDir.Focus()
 	}
 	return nil
+}
+
+// plan starts planning a task unless one is being planned.
+func (m *libScreen) plan(what string, cmd tea.Cmd) tea.Cmd {
+	if m.planning {
+		return status("still planning; wait for the preview")
+	}
+	m.planning = true
+	return tea.Batch(status("%s", what), cmd)
+}
+
+func (m *libScreen) importKey(k tea.KeyPressMsg) tea.Cmd {
+	switch k.String() {
+	case "esc":
+		m.importDir = nil
+		return status("import cancelled")
+	case "enter":
+		dir := strings.TrimSpace(m.importDir.Value())
+		if dir == "" {
+			return status("type the folder to import")
+		}
+		dir, err := platform.ExpandHome(dir)
+		if err != nil {
+			return errStatus(err)
+		}
+		m.importDir = nil
+		return m.plan("reading "+dir+"…", planImport(m.s, dir))
+	}
+	in, cmd := m.importDir.Update(k)
+	m.importDir = &in
+	return cmd
 }
 
 func (m *libScreen) startEdit() tea.Cmd {
@@ -275,10 +367,17 @@ func (m *libScreen) wantCover() tea.Cmd {
 }
 
 func (m *libScreen) view(w, h int) string {
+	m.height = h
 	if m.form != nil {
 		return m.form.view(w, h)
 	}
+	if m.task != nil {
+		return m.task.view(w, h)
+	}
 	var top []string
+	if m.importDir != nil {
+		top = append(top, m.importDir.View(), stDim.Render("Files are tagged, checked for duplicates and filed by path_template; you see a preview first."))
+	}
 	if m.filtering || m.filter.Value() != "" {
 		top = append(top, m.filter.View())
 	}
@@ -286,7 +385,7 @@ func (m *libScreen) view(w, h int) string {
 	case m.loading && len(m.albums) == 0:
 		return strings.Join(append(top, stDim.Render("reading the library…")), "\n")
 	case len(m.albums) == 0:
-		return strings.Join(append(top, "The library is empty. Import music with `ymlib import` or download it on the Search screen."), "\n")
+		return strings.Join(append(top, "The library is empty. Import a folder with a, or download music on the Search screen."), "\n")
 	case len(m.shown) == 0:
 		return strings.Join(append(top, "No album matches the filter."), "\n")
 	}

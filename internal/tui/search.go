@@ -175,7 +175,7 @@ func (m *searchScreen) search() tea.Cmd {
 		return nil
 	}
 	if len(m.s.sources.Enabled()) == 0 {
-		return errStatus(errors.New("no enabled plugins; register one with `ymlib plugin add <name> <url>`"))
+		return errStatus(errors.New("no enabled plugins; add one in Settings (a)"))
 	}
 	m.seq++
 	m.busy, m.lastQuery, m.lastKind = true, q, m.kind
@@ -249,7 +249,7 @@ func (m *searchScreen) view(w, h int) string {
 	switch {
 	case len(m.s.sources.Enabled()) == 0:
 		lines = append(lines, stWarn.Render("No enabled plugins. A plugin is an HTTP server you run (docs/plugin-protocol.md);"+
-			" register it with `ymlib plugin add <name> <url>`, or enable one in Settings."))
+			" add one in Settings (a), or enable one there."))
 	case m.busy:
 		lines = append(lines, stDim.Render("searching…"))
 	case len(m.notes) > 0:

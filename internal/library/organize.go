@@ -46,11 +46,17 @@ func albumKey(e Entry) string {
 // PlanOrganize computes where every indexed file belongs according to the
 // path template. It changes nothing; run Scan first so the index is current.
 func (l *Library) PlanOrganize(ctx context.Context) (OrganizePlan, error) {
-	var plan OrganizePlan
 	es, err := l.Entries(ctx)
 	if err != nil {
-		return plan, err
+		return OrganizePlan{}, err
 	}
+	return l.planOrganize(es)
+}
+
+// planOrganize plans moves for es, whose tags may differ from the files'
+// (PlanTidy passes the tags as they will be after retagging).
+func (l *Library) planOrganize(es []Entry) (OrganizePlan, error) {
+	var plan OrganizePlan
 
 	// A track counts as multi-disc if its album does, even when its own
 	// DISCTOTAL tag is missing.

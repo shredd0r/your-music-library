@@ -478,7 +478,7 @@ func (r *Runner) ingest(ctx context.Context, files []string) map[string]outcome 
 		}
 	}
 	if rep.Reviews > 0 {
-		r.logf("? %d album(s) added to `ymlib review`", rep.Reviews)
+		r.logf("? %d album(s) added to Review", rep.Reviews)
 	}
 	return out
 }

@@ -185,7 +185,7 @@ func TestRegistryAndCheck(t *testing.T) {
 	if en := reg.Enabled(); len(en) != 1 || en[0] != on {
 		t.Errorf("Enabled = %v", en)
 	}
-	if _, err := reg.Get("nope"); err == nil || !strings.Contains(err.Error(), "ymlib plugin list") {
+	if _, err := reg.Get("nope"); err == nil || !strings.Contains(err.Error(), "see Settings") {
 		t.Errorf("Get = %v", err)
 	}
 	st := source.Check(context.Background(), reg.All())

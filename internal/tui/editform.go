@@ -101,7 +101,7 @@ func (f *editForm) update(msg tea.Msg) tea.Cmd {
 		if n := len(msg.rep.Failed); n > 0 {
 			text += fmt.Sprintf(", %d failed: %v", n, msg.rep.Failed[0].Err)
 		} else {
-			text += "; run `ymlib organize` to rename files from the new tags"
+			text += "; Tidy library (t) renames files from the new tags"
 		}
 		return tea.Batch(func() tea.Msg { return statusMsg{text: text, err: len(msg.rep.Failed) > 0} },
 			refresh(false, true, false))

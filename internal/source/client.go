@@ -323,7 +323,7 @@ func (r *Registry) Get(name string) (*Plugin, error) {
 	if p, ok := r.plugins[name]; ok {
 		return p, nil
 	}
-	return nil, fmt.Errorf("no plugin %q is registered (see `ymlib plugin list`)", name)
+	return nil, fmt.Errorf("no plugin %q is registered (see Settings)", name)
 }
 
 // All returns plugins sorted by name.

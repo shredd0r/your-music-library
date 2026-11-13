@@ -4,18 +4,26 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"your-music-library/internal/config"
+	"your-music-library/internal/secrets"
 	"your-music-library/internal/source"
 	"your-music-library/internal/tags"
 )
 
-// settingsScreen shows the configuration and enables or disables plugins.
+// settingsScreen shows the configuration and adds, removes, enables or
+// disables plugins.
 type settingsScreen struct {
 	s      *shared
 	cursor int
+	// add is the "add plugin" form (name, URL); nil when closed.
+	add      []textinput.Model
+	addFocus int
+	// removing names the plugin waiting for a y/n confirmation.
+	removing string
 }
 
 func newSettings(s *shared) *settingsScreen { return &settingsScreen{s: s} }
@@ -24,16 +32,28 @@ func (m *settingsScreen) name() string { return "Settings" }
 
 func (m *settingsScreen) init() tea.Cmd { return nil }
 
-func (m *settingsScreen) capturing() bool { return false }
+func (m *settingsScreen) capturing() bool { return m.add != nil || m.removing != "" }
 
 func (m *settingsScreen) help() string {
-	return "↑↓ select · enter enable/disable plugin · r check plugins"
+	switch {
+	case m.add != nil:
+		return "tab next field · enter add plugin · esc cancel"
+	case m.removing != "":
+		return "y remove " + m.removing + " · n keep it"
+	}
+	return "↑↓ select · enter enable/disable · a add plugin · x remove plugin · r check plugins"
 }
 
 func (m *settingsScreen) update(msg tea.Msg) tea.Cmd {
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
+	}
+	if m.add != nil {
+		return m.addKey(k)
+	}
+	if m.removing != "" {
+		return m.removeKey(k.String())
 	}
 	plugins := m.s.sources.All()
 	if c, ok := move(m.cursor, len(plugins), k.String(), 5); ok {
@@ -47,6 +67,58 @@ func (m *settingsScreen) update(msg tea.Msg) tea.Cmd {
 		if m.cursor < len(plugins) {
 			return m.togglePlugin(plugins[m.cursor])
 		}
+	case "a":
+		name, url := newInput("Name: "), newInput("URL:  ")
+		name.Placeholder, url.Placeholder = "myplugin", "http://127.0.0.1:8765"
+		m.add, m.addFocus = []textinput.Model{name, url}, 0
+		return m.add[0].Focus()
+	case "x":
+		if m.cursor < len(plugins) {
+			m.removing = plugins[m.cursor].Name
+		}
+	}
+	return nil
+}
+
+func (m *settingsScreen) addKey(k tea.KeyPressMsg) tea.Cmd {
+	switch k.String() {
+	case "esc":
+		m.add = nil
+		return status("no plugin added")
+	case "tab", "down", "shift+tab", "up":
+		m.add[m.addFocus].Blur()
+		m.addFocus = 1 - m.addFocus
+		return m.add[m.addFocus].Focus()
+	case "enter":
+		name, url := strings.TrimSpace(m.add[0].Value()), strings.TrimSpace(m.add[1].Value())
+		c, err := config.AddPlugin(m.s.d.ConfigPath, name, url)
+		if err != nil {
+			return errStatus(err)
+		}
+		m.add = nil
+		m.s.cfg, m.s.sources = c, source.FromConfig(c.Plugins)
+		return tea.Batch(status("added %s (checking whether it is online…)", name), checkPlugins(m.s))
+	}
+	var cmd tea.Cmd
+	m.add[m.addFocus], cmd = m.add[m.addFocus].Update(k)
+	return cmd
+}
+
+func (m *settingsScreen) removeKey(key string) tea.Cmd {
+	name := m.removing
+	switch key {
+	case "y":
+		m.removing = ""
+		c, err := config.RemovePlugin(m.s.d.ConfigPath, name)
+		if err != nil {
+			return errStatus(err)
+		}
+		m.s.cfg, m.s.sources = c, source.FromConfig(c.Plugins)
+		m.cursor = max(0, min(m.cursor, len(m.s.sources.All())-1))
+		return status("removed %s", name)
+	case "n", "esc":
+		m.removing = ""
+		return status("kept %s", name)
 	}
 	return nil
 }
@@ -82,8 +154,16 @@ func (m *settingsScreen) view(w, h int) string {
 		field("Min score", fmt.Sprintf("%.2f", c.Metadata.MinScore)),
 		field("Downloads", fmt.Sprintf("%d at a time; wait %d min for offline plugins", c.Queue.Parallel, c.Plugins.OfflineWaitMinutes)),
 		field("Covers", string(m.s.d.Covers)+stDim.Render("  (YMLIB_IMAGES=kitty|halfblock overrides)")),
+		field("Discogs token", m.tokenStatus()),
 		"",
-		stBold.Render("Plugins") + stDim.Render("  (HTTP servers you run; add with `ymlib plugin add <name> <url>`)"),
+		stBold.Render("Plugins") + stDim.Render("  (HTTP servers you run)"),
+	}
+	switch {
+	case m.add != nil:
+		lines = append(lines, "  Add a plugin: the name is yours (used in references); the URL is the server's address.",
+			"  "+m.add[0].View(), "  "+m.add[1].View(), "")
+	case m.removing != "":
+		lines = append(lines, stWarn.Render("  Remove "+m.removing+"? Its queued downloads will fail. y/n"), "")
 	}
 	if len(plugins) == 0 {
 		lines = append(lines, stDim.Render("  none registered"))
@@ -98,6 +178,16 @@ func (m *settingsScreen) view(w, h int) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m *settingsScreen) tokenStatus() string {
+	switch m.s.d.DiscogsToken {
+	case secrets.SourceKeychain:
+		return stOK.Render("set") + stDim.Render(" (keychain)")
+	case secrets.SourceEnv:
+		return stOK.Render("set") + stDim.Render(" (YMLIB_DISCOGS_TOKEN)")
+	}
+	return stWarn.Render("not set") + stDim.Render("  (Discogs is skipped; see the README to add one)")
 }
 
 func (m *settingsScreen) pluginRow(p *source.Plugin) string {

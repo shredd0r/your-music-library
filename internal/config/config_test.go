@@ -112,7 +112,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 func TestRemovedKeysHint(t *testing.T) {
 	for _, data := range []string{"sources_dir: /x\n", "library_path: /m\nsources:\n  idle_minutes: 3\n"} {
 		_, err := Parse([]byte(data))
-		if err == nil || !strings.Contains(err.Error(), "ymlib plugin add") {
+		if err == nil || !strings.Contains(err.Error(), "add them in Settings") {
 			t.Errorf("%q: %v", data, err)
 		}
 	}

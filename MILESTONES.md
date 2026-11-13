@@ -18,7 +18,7 @@ Status legend: ✅ done · 🚧 in progress · ⏳ not started
 | **Later stages** | | |
 | P2 | Plugin protocol v2: plugins keep running until `close` | superseded by P3 |
 | P3 | HTTP plugins: servers the user runs, ymlib is a client | ✅ 2026-11-06 |
-| T1 | TUI only: CLI features move into the TUI, then the CLI is removed | ⏳ |
+| T1 | TUI only: CLI features move into the TUI, then the CLI is removed | ✅ 2026-11-13 |
 | T2 | One fixed tag format (no presets, no grouped singles, ASCII text, feat. in titles) | ✅ 2026-11-13 |
 | S2 | Duplicate detection polished across sources | ⏳ |
 | S3 | Batch download list (YAML file, TUI Batch screen, you pick each result) | ⏳ |
@@ -147,8 +147,8 @@ Decided 2026-11-06 in a grilling session.
 - Tests: client (protocol, error codes, offline vs. cancelled, other protocols, file-name tricks, short bodies, registry/check), config (plugins section, validation, removed-key hint, edits keep comments), queue (`Wait`/`Wake` keep attempts and the start time), runner (offline waits → online imports, wait limit fails, retry, disabled), CLI (`plugin` commands, offline download then `queue run`, old-config hint), TUI (toggle plugin, offline warning, waiting jobs start when the plugin returns).
 - Verified with the real binary in temp dirs: `plugin add` while offline, `plugin list`, search warning, downloads waiting and shown in `ymlib queue`. **Not verified by hand:** search and a 250 MB download against a plugin in another process. The Bash sandbox blocks connections between local processes, so this needs a run by the user (covered in-process by the tests).
 
-## T1 — TUI only ⏳
-Decided 2026-11-12.
+## T1 — TUI only ✅
+Decided 2026-11-12, built 2026-11-13.
 - ymlib becomes **TUI-only**. `ymlib` opens the TUI. There are no subcommands and no flags (no `--config`, no `--version`). Started outside a terminal, it prints an error. No desktop UI is planned.
 - **Order:** first give every kept CLI-only feature a TUI equivalent, then delete the commands in `internal/cli` and the cobra dependency in the same milestone, so no feature disappears in between.
 - **First start:** if `config.yaml` is missing, the TUI writes the default one and says where.
@@ -165,6 +165,15 @@ Decided 2026-11-12.
   - **Import**: asks for a folder path, shows a preview (duplicates skipped, where each album lands), then copies on confirm (or moves, if chosen).
 - **Dropped without replacement**, because the TUI already covers them or they go away: `tui`, `config path|show|init`, `preset list`, `singles`, `review`/`apply`/`skip`, `plugin list|enable|disable`, `search`, `download`, `queue`/`run`/`retry`/`clear`.
 - When done: CLAUDE.md (preview → `--apply` becomes preview → confirm in the TUI; layout without `internal/cli`) and README.
+
+**As built**
+- `internal/app` replaces the CLI's wiring: `Open(ctx, dirs, endpoints)` loads the config (writing the default one, and creating the default library folder, only on first start; a configured `library_path` is never created, since it may be an unmounted drive), opens the database, library, queue, plugins and metadata providers, and returns `tui.Deps`. Problems that leave ymlib usable (no Discogs token, no provider) become status-line warnings. `cmd/ymlib` refuses arguments and non-terminals, then calls `app.Run`.
+- `internal/cli` and cobra are gone; `secrets` only reads (`Get`).
+- Library screen: `libtasks.go` holds the previewed tasks (scrollable, `enter`/`y` applies, `esc` cancels). Tidy library is `library.PlanTidy`/`ApplyTidy`: retag, then organize, with the moves computed from the tags as Format will write them, so the preview shows the final names. Its playlist check reads `.m3u`/`.m3u8` in `<library>/Playlists/` (relative or absolute entries, compared case-insensitively). Import is `library.PlanImport` (refuses folders inside the library). Full rebuild is `library.Rebuild`.
+- Identify: `i` = the selected album (prefix = its folder), `I` = every album without a release ID. Without a metadata provider it reports that instead of planning.
+- Settings: `a` opens a name + URL form (`config.AddPlugin`; errors such as a bad name keep the form open), `x` asks y/n before `config.RemovePlugin` (queued downloads of that plugin then fail). The token status comes from `Deps.DiscogsToken`, filled by `app`, so the UI never touches the keychain.
+- User messages that named CLI commands now point to the screens (Settings, Review, Tidy library).
+- Tests: `internal/app` (first start, existing config and token, no providers, missing configured folder, broken config); library (tidy preview from formatted tags, playlist warning, rebuild, import refusal); TUI (tidy, identify album/all, no provider, import with move, rebuild, plugin add/remove). The binary was smoke-tested in a pseudo-terminal with temp dirs: first start writes the config and library folder, shows the notice, Settings shows the config path, token status and fixed tags; `q` quits; arguments and pipes are refused.
 
 ## T2 — One fixed tag format ✅
 Decided 2026-11-12, built 2026-11-13.
@@ -189,7 +198,7 @@ Decided 2026-11-12, built 2026-11-13.
 - Guests are split on the joined artist credit (`A feat. B`, `A ft. B`, `A featuring B`, `A (feat. B)`), which is how both providers print it, rather than on the providers' raw credit lists. `tags.MainArtist` does the same for duplicate checks, and matching treats `(feat. X)` in titles as noise, so downloads still match formatted files.
 - Genre/cover fill: after a confident match, only the providers *after* the chosen one are asked (earlier ones already scored below `min_score`). Review picks are not filled.
 - `config.Load` deletes `active_preset`, `singles` and `presets` (keeping the file's header comment) and lists them in `Config.Removed`; the CLI prints a note, and the TUI shows it in the status line. `Parse` ignores them.
-- Until T1: the CLI `retag` (no `--preset`) is Tidy's tag half and `organize` its move half. `ymlib preset` and `ymlib singles` are gone. Settings no longer lists presets; the tag edit form shows all fixed fields and takes plain numbers.
+- `ymlib preset` and `ymlib singles` were removed (and with T1 the whole CLI; Tidy library replaced `retag` + `organize`). Settings no longer lists presets; the tag edit form shows all fixed fields and takes plain numbers.
 - Dropped: `metadata.Release.BackURL`, `TrackTotal()`, `DiscTotal()`.
 - Verified with the real binary in temp dirs: an old config loses its preset/singles keys with the header comment kept, `retag` previews then moves `feat.` into the title and ASCII-fies the genre, `organize` renames the file.
 
@@ -267,4 +276,4 @@ Decided 2026-10-15.
 Resolved 2026-11-12 and moved into T1, T2, S3, S4 and S5: ASCII apostrophes, the grouped-singles date and covers, the genre/cover fill, standard vs. deluxe, playlists for chosen artists, M4A (stays postponed), and the two S5 questions. Resolved 2026-11-13: S4 playlists, guest artists, fixed field set, old config keys.
 
 - **Needs brainstorm:** what is stored where (config.yaml vs. SQLite vs. files).
-- P3: check by hand against a plugin running in another process: `ymlib plugin add`, search, a ~250 MB download (memory stays flat), stop the plugin (downloads wait), start it (`ymlib queue run` completes). After T1, do this in the TUI.
+- P3: check by hand against a plugin running in another process: add it in Settings, search, a ~250 MB download (memory stays flat), stop the plugin (downloads wait), start it (waiting downloads complete).

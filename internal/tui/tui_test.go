@@ -37,6 +37,8 @@ type harness struct {
 	db      *sql.DB
 	cfgPath string
 	quit    bool
+	// identifier, set in prepare, is used for lookups (nil: none).
+	identifier *metadata.Identifier
 }
 
 func newHarness(t *testing.T, prepare func(h *harness)) *harness {
@@ -72,7 +74,7 @@ func newHarness(t *testing.T, prepare func(h *harness)) *harness {
 	t.Cleanup(cancel)
 	h.app = New(ctx, Deps{
 		Lib: lib, Queue: queue.New(db), Sources: source.FromConfig(cfg.Plugins),
-		Config: cfg, ConfigPath: cfgPath, Covers: termimg.HalfBlock,
+		Config: cfg, ConfigPath: cfgPath, Covers: termimg.HalfBlock, Identifier: h.identifier,
 		// the fake plugin's "long" track claims 5 minutes
 		Verify: func(_ context.Context, _ string, expected time.Duration) error {
 			if expected > time.Minute {
@@ -138,6 +140,8 @@ func key(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	case "tab":
 		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
@@ -522,5 +526,160 @@ func TestQuitWhenIdle(t *testing.T) {
 	h.keys("esc", "2", "q")
 	if !h.quit {
 		t.Error("q did not quit")
+	}
+}
+
+// oneRelease is a metadata provider that knows a single release.
+type oneRelease struct{ rel metadata.Release }
+
+func (p oneRelease) Name() string { return p.rel.Provider }
+func (p oneRelease) Search(context.Context, metadata.Query) ([]metadata.Candidate, error) {
+	return []metadata.Candidate{{ID: p.rel.ID, Title: p.rel.Title, Artist: p.rel.Artist}}, nil
+}
+func (p oneRelease) Release(context.Context, string) (metadata.Release, error) { return p.rel, nil }
+
+func TestLibraryTidy(t *testing.T) {
+	h := newHarness(t, func(h *harness) {
+		h.addTrack("in/x.flac", tags.Track{Title: "Song", Artist: "A feat. B", AlbumArtist: "A", Album: "Rec", TrackNumber: 2})
+	})
+	pl := filepath.Join(h.lib.Root(), library.PlaylistsDir, "Mix.m3u8")
+	if err := os.MkdirAll(filepath.Dir(pl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pl, []byte("../in/x.flac\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.keys("3", "t")
+	h.wantScreen("Tidy library: preview", "Playlists could be broken: Mix", "Tag changes (1 files)",
+		"Artist:       A feat. B → A", "A/Rec/02 - Song (feat. B).flac")
+	if _, err := os.Stat(filepath.Join(h.lib.Root(), "in/x.flac")); err != nil {
+		t.Fatal("the preview changed files")
+	}
+	h.keys("enter")
+	if !strings.Contains(h.status(), "tidied: 1 files retagged, 1 moved") {
+		t.Fatalf("status = %q", h.status())
+	}
+	tr, err := tags.Read(filepath.Join(h.lib.Root(), "A/Rec/02 - Song (feat. B).flac"))
+	if err != nil || tr.Artist != "A" {
+		t.Errorf("tidied file: %+v, %v", tr, err)
+	}
+	h.wantScreen("A — Rec")
+
+	h.keys("t")
+	h.wantScreen("The library is already tidy.")
+	h.keys("esc")
+	h.wantScreen("A — Rec")
+}
+
+func TestLibraryIdentify(t *testing.T) {
+	rel := metadata.Release{Provider: "musicbrainz", ID: "r1", Title: "Off the Wall", Artist: "Michael Jackson",
+		Date: "1979-08-10", Genre: "Disco", Tracks: []metadata.Track{{Disc: 1, Number: 1, Title: "Rock With You"}}}
+	h := newHarness(t, func(h *harness) {
+		h.addTrack("rip/01.flac", tags.Track{Title: "Rock With You", Artist: "Michael Jackson", Album: "Off the Wall"})
+		h.identifier = &metadata.Identifier{Providers: []metadata.Provider{oneRelease{rel}}, MinScore: 0.85}
+	})
+	h.keys("3", "i")
+	h.wantScreen("Identify Michael Jackson — Off the Wall: preview", "Michael Jackson — Off the Wall (1979-08-10)",
+		"Date:         (none) → 1979-08-10")
+	h.keys("enter")
+	if !strings.Contains(h.status(), "identified: 1 files tagged") {
+		t.Fatalf("status = %q", h.status())
+	}
+	if tr, _ := tags.Read(filepath.Join(h.lib.Root(), "rip/01.flac")); tr.Genre != "Disco" || tr.IDs.MBReleaseID != "r1" {
+		t.Errorf("tags = %+v", tr)
+	}
+	h.keys("I")
+	h.wantScreen("Nothing to identify.", "1 files already have a release ID")
+}
+
+func TestLibraryIdentifyWithoutProviders(t *testing.T) {
+	h := newHarness(t, func(h *harness) {
+		h.addTrack("rip/01.flac", tags.Track{Title: "One", Album: "R"})
+	})
+	h.keys("3", "I")
+	if !h.app.status.err || !strings.Contains(h.status(), "no metadata provider") {
+		t.Errorf("status = %q", h.status())
+	}
+}
+
+func TestLibraryImport(t *testing.T) {
+	h := newHarness(t, nil)
+	out := t.TempDir()
+	src := testutil.CopyAudio(t, "flac", filepath.Join(out, "rip", "1.flac"))
+	if err := tags.Write(src, tags.Track{Title: "One", Artist: "A", Album: "R", TrackNumber: 1}); err != nil {
+		t.Fatal(err)
+	}
+	h.keys("3", "a")
+	h.typeText(filepath.Join(h.lib.Root(), "x"))
+	h.keys("enter")
+	if !h.app.status.err || !strings.Contains(h.status(), "inside the library") {
+		t.Fatalf("status = %q", h.status())
+	}
+
+	h.keys("a")
+	h.typeText(out)
+	h.keys("enter")
+	h.wantScreen("Import "+out+": preview", "Files (1 to import)", "rip/1.flac", "→ A/R/01 - One.flac")
+	h.keys("m")
+	if !strings.Contains(h.status(), "imported 1 files") {
+		t.Fatalf("status = %q", h.status())
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Error("m should delete the original")
+	}
+	if _, err := os.Stat(filepath.Join(h.lib.Root(), "A/R/01 - One.flac")); err != nil {
+		t.Error(err)
+	}
+	h.wantScreen("A — R")
+}
+
+func TestLibraryRebuild(t *testing.T) {
+	h := newHarness(t, func(h *harness) {
+		h.addTrack("a.flac", tags.Track{Title: "One", Album: "R"})
+	})
+	h.keys("3", "S")
+	if !strings.Contains(h.status(), "scan: 0 added, 1 updated, 0 removed") {
+		t.Errorf("status = %q", h.status())
+	}
+}
+
+func TestSettingsAddAndRemovePlugin(t *testing.T) {
+	h := newHarness(t, nil)
+	h.keys("5")
+	h.wantScreen("Discogs token", "not set")
+	h.keys("a")
+	h.typeText("bad name")
+	h.keys("tab")
+	h.typeText("http://127.0.0.1:9")
+	h.keys("enter")
+	if !h.app.status.err {
+		t.Fatalf("a name with a space was accepted: %q", h.status())
+	}
+	h.keys("shift+tab", "ctrl+u")
+	h.typeText("shelf")
+	h.keys("enter")
+	if !strings.Contains(h.status(), "added shelf") {
+		t.Fatalf("status = %q", h.status())
+	}
+	if p, err := h.app.s.sources.Get("shelf"); err != nil || p.URL != "http://127.0.0.1:9" {
+		t.Fatalf("registry: %+v %v", p, err)
+	}
+	h.wantScreen("shelf", "http://127.0.0.1:9")
+	data, _ := os.ReadFile(h.cfgPath)
+	if !strings.Contains(string(data), "shelf:") || !strings.Contains(string(data), "# test config") {
+		t.Errorf("config file:\n%s", data)
+	}
+
+	// plugins are listed by name: fake, shelf
+	h.keys("down", "x")
+	h.wantScreen("Remove shelf? Its queued downloads will fail.")
+	h.keys("n")
+	h.wantScreen("shelf")
+	h.keys("x", "y")
+	if !strings.Contains(h.status(), "removed shelf") || len(h.app.s.sources.All()) != 1 {
+		t.Fatalf("status = %q, plugins = %d", h.status(), len(h.app.s.sources.All()))
+	}
+	if data, _ := os.ReadFile(h.cfgPath); strings.Contains(string(data), "shelf") {
+		t.Errorf("config file:\n%s", data)
 	}
 }

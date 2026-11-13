@@ -1,15 +1,21 @@
 package secrets
 
-import "testing"
+import (
+	"testing"
 
-func TestGetSetDelete(t *testing.T) {
+	"github.com/zalando/go-keyring"
+)
+
+func TestGet(t *testing.T) {
 	UseMockKeychain()
 	t.Setenv(DiscogsToken.Env, "")
 
 	if v, src, err := Get(DiscogsToken); err != nil || v != "" || src != SourceNone {
 		t.Fatalf("empty: %q %q %v", v, src, err)
 	}
-	if err := Set(DiscogsToken, "abc"); err != nil {
+	// ymlib never writes the keychain; the user adds the token with
+	// `security add-generic-password -s ymlib -a discogs-token -w <token>`.
+	if err := keyring.Set(service, DiscogsToken.Key, "abc"); err != nil {
 		t.Fatal(err)
 	}
 	if v, src, _ := Get(DiscogsToken); v != "abc" || src != SourceKeychain {
@@ -18,18 +24,5 @@ func TestGetSetDelete(t *testing.T) {
 	t.Setenv(DiscogsToken.Env, "from-env")
 	if v, src, _ := Get(DiscogsToken); v != "from-env" || src != SourceEnv {
 		t.Errorf("env should win: %q %q", v, src)
-	}
-	t.Setenv(DiscogsToken.Env, "")
-	if err := Delete(DiscogsToken); err != nil {
-		t.Fatal(err)
-	}
-	if err := Delete(DiscogsToken); err != nil {
-		t.Errorf("deleting twice: %v", err)
-	}
-	if v, _, _ := Get(DiscogsToken); v != "" {
-		t.Errorf("after delete: %q", v)
-	}
-	if err := Set(DiscogsToken, ""); err == nil {
-		t.Error("empty token accepted")
 	}
 }

@@ -26,7 +26,13 @@ type ScanReport struct {
 // Scan walks the library folder and brings the index in line with the
 // files. It never modifies files. Files whose size and modification time
 // match the index are not re-read.
-func (l *Library) Scan(ctx context.Context) (r ScanReport, err error) {
+func (l *Library) Scan(ctx context.Context) (ScanReport, error) { return l.scan(ctx, false) }
+
+// Rebuild is Scan that rereads every file, for when the index may be out
+// of step with files whose size and modification time didn't change.
+func (l *Library) Rebuild(ctx context.Context) (ScanReport, error) { return l.scan(ctx, true) }
+
+func (l *Library) scan(ctx context.Context, full bool) (r ScanReport, err error) {
 	existing, err := l.Entries(ctx)
 	if err != nil {
 		return r, err
@@ -79,7 +85,7 @@ func (l *Library) Scan(ctx context.Context) (r ScanReport, err error) {
 			return nil
 		}
 		old, ok := known[rel]
-		if ok && old.Size == info.Size() && old.MtimeNs == info.ModTime().UnixNano() {
+		if ok && !full && old.Size == info.Size() && old.MtimeNs == info.ModTime().UnixNano() {
 			r.Unchanged++
 			return nil
 		}
